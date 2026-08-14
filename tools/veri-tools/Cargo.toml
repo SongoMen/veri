@@ -1,0 +1,21 @@
+[package]
+name = "veri-tools"
+description = "Diagnostics for the veri client. Not published."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "veri_tools"
+path = "src/lib.rs"
+
+[dependencies]
+veri = { path = "../../crates/veri" }
+veri-integrations = { path = "../../crates/veri-integrations", version = "0.1.0" }
+veri-js = { path = "../../crates/veri-js" }
+veri-core = { path = "../../crates/veri-core" }
+wreq.workspace = true
+wreq-util.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

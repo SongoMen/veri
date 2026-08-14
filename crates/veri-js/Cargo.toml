@@ -1,0 +1,26 @@
+[package]
+name = "veri-js"
+description = "Runs a page's own JavaScript in a browser-accurate environment, fetching through the caller's HTTP client. Embedded V8, no browser."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["javascript", "v8", "browser", "dom", "fingerprint"]
+categories = ["web-programming"]
+
+# The harvested browser profile is data the crate cannot run without, so it
+# must ship with it. `build.rs` too, or Windows fails to link at install time.
+include = ["src/**/*", "profiles/**/*", "Cargo.toml", "build.rs"]
+build = "build.rs"
+
+[dependencies]
+veri-core = { path = "../veri-core", version = "0.1.0" }
+v8 = "130"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing.workspace = true
+
+[[bin]]
+name = "veri-recorder"
+path = "src/main.rs"

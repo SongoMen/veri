@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # veri-js pulls a ~100 MB prebuilt librusty_v8 into target/ on a cold
+      # cache, which dominates the run.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install cmake (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: fmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+      - name: docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  # `veri-js` carries a hand-maintained `include` list, because the harvested
+  # browser profile lives outside `src/` and Cargo would otherwise leave it out.
+  # A package missing it compiles and then fails at runtime on every install,
+  # which is the worst way to find out.
+  packaging:
+    name: packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: the bundled profile and env scripts must be packaged
+        run: |
+          files=$(cargo package -p veri-js --list --allow-dirty)
+          for required in profiles/chrome.json src/prelude.js src/env/00-identity.js build.rs; do
+            echo "$files" | grep -qx "$required" || {
+              echo "::error::$required is missing from the veri-js package"
+              exit 1
+            }
+          done
+          echo "$files" | grep -c '^src/env/' | grep -qx 8 || {
+            echo "::error::expected 8 env fragments in the package"
+            exit 1
+          }
+          echo "veri-js packages its data"
+      - name: every publishable crate packages
+        run: |
+          for c in veri-core veri-integrations veri-js veri; do
+            cargo package -p "$c" --list --allow-dirty > /dev/null || {
+              echo "::error::$c does not package"; exit 1; }
+          done
+          echo "all crates package"
+
+  node:
+    name: node client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # The offline suite drives a mock daemon, so it needs no Rust build.
+      - name: offline suite
+        working-directory: clients/node
+        run: npm test

@@ -1,0 +1,5 @@
+tools/harvest.html
+node_modules
+target
+crates/veri-awswaf/fixtures/challenge_page.html
+crates/veri-js/profiles/chrome.json

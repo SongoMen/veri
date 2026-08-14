@@ -1,0 +1,16 @@
+{
+  "name": "veri-bench",
+  "private": true,
+  "description": "Compares veri against axios and headless Chromium on the same targets and the same egress budget. Not published.",
+  "type": "module",
+  "scripts": {
+    "bench": "node bench.mjs"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "https-proxy-agent": "^7.0.0",
+    "puppeteer": "^24.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

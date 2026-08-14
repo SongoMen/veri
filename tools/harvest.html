@@ -1,0 +1,565 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>veri profile harvester</title>
+<body>
+<p><button id="save" disabled>Save profile</button>
+<span id="note">collecting…</span></p>
+<pre id="out"></pre>
+</body>
+<script>
+(function () {
+  const profile = { meta: {}, globals: {}, prototypes: {}, navigator: {}, screen: {}, misc: {} };
+
+  profile.meta = {
+    ua: navigator.userAgent,
+    harvestedAt: new Date().toISOString(),
+    chrome: (/Chrome\/([\d.]+)/.exec(navigator.userAgent) || [])[1] || null,
+  };
+
+  const seen = new Set();
+  let o = globalThis;
+  while (o) {
+    for (const k of Object.getOwnPropertyNames(o)) seen.add(k);
+    o = Object.getPrototypeOf(o);
+  }
+  for (const k of [...seen].sort()) {
+    let t;
+    try { t = typeof globalThis[k]; } catch (e) { t = 'throws'; }
+    profile.globals[k] = t;
+  }
+
+  for (const k of Object.keys(profile.globals)) {
+    if (profile.globals[k] !== 'function') continue;
+    try {
+      const proto = globalThis[k] && globalThis[k].prototype;
+      if (!proto) continue;
+      const names = Object.getOwnPropertyNames(proto);
+      if (names.length) {
+        profile.prototypes[k] = names.sort();
+      }
+    } catch (e) {}
+  }
+
+  // prototype
+  profile.parents = {};
+  const protoOwner = new Map();
+  for (const k of Object.keys(profile.globals)) {
+    if (profile.globals[k] !== 'function') continue;
+    try {
+      const pr = globalThis[k] && globalThis[k].prototype;
+      if (pr) protoOwner.set(pr, k);
+    } catch (e) {}
+  }
+  for (const k of Object.keys(profile.globals)) {
+    if (profile.globals[k] !== 'function') continue;
+    try {
+      const pr = globalThis[k] && globalThis[k].prototype;
+      if (!pr) continue;
+      const parent = Object.getPrototypeOf(pr);
+      if (!parent) { profile.parents[k] = null; continue; }
+      if (parent === Object.prototype) { profile.parents[k] = 'Object'; continue; }
+      const owner = protoOwner.get(parent);
+      if (owner) profile.parents[k] = owner;
+    } catch (e) {}
+  }
+
+  for (const k in navigator) {
+    try {
+      const v = navigator[k];
+      const t = typeof v;
+      if (t === 'string' || t === 'number' || t === 'boolean') profile.navigator[k] = v;
+      else if (Array.isArray(v)) profile.navigator[k] = v;
+    } catch (e) {}
+  }
+  try { profile.navigator.languages = [...navigator.languages]; } catch (e) {}
+  try {
+    profile.navigator.plugins = [...navigator.plugins].map(p => ({
+      name: p.name, filename: p.filename, description: p.description,
+      mimeTypes: [...p].map(m => ({ type: m.type, suffixes: m.suffixes, description: m.description })),
+    }));
+  } catch (e) {}
+  try {
+    profile.navigator.userAgentData = navigator.userAgentData ? {
+      brands: navigator.userAgentData.brands,
+      mobile: navigator.userAgentData.mobile,
+      platform: navigator.userAgentData.platform,
+      highEntropy: null,
+    } : null;
+  } catch (e) {}
+
+  for (const k of ['width', 'height', 'availWidth', 'availHeight', 'availLeft', 'availTop', 'colorDepth', 'pixelDepth']) {
+    profile.screen[k] = screen[k];
+  }
+  profile.screen.orientation = { angle: screen.orientation?.angle ?? 0, type: screen.orientation?.type ?? 'landscape-primary' };
+  profile.misc.devicePixelRatio = devicePixelRatio;
+  profile.misc.innerWidth = innerWidth;
+  profile.misc.innerHeight = innerHeight;
+  profile.misc.outerWidth = outerWidth;
+  profile.misc.outerHeight = outerHeight;
+  profile.misc.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  profile.misc.timezoneOffset = new Date().getTimezoneOffset();
+
+  // canvas
+  try {
+    const c = document.createElement('canvas');
+    c.width = 280; c.height = 60;
+    const g = c.getContext('2d');
+    g.textBaseline = 'top';
+    g.font = '14px "Arial"';
+    g.textBaseline = 'alphabetic';
+    g.fillStyle = '#f60';
+    g.fillRect(125, 1, 62, 20);
+    g.fillStyle = '#069';
+    g.fillText('Cwm fjordbank glyphs vext quiz, \u{1F600}', 2, 15);
+    g.fillStyle = 'rgba(102, 204, 0, 0.7)';
+    g.fillText('Cwm fjordbank glyphs vext quiz, \u{1F600}', 4, 17);
+    profile.misc.canvasDataURL = c.toDataURL();
+    profile.misc.canvasMetrics = (() => {
+      const m = g.measureText('Cwm fjordbank glyphs vext quiz');
+      const out = {};
+      for (const k in m) { if (typeof m[k] === 'number') out[k] = m[k]; }
+      return out;
+    })();
+  } catch (e) { profile.misc.canvasError = String(e); }
+
+  // WebGL
+  try {
+    const gc = document.createElement('canvas');
+    const gl = gc.getContext('webgl') || gc.getContext('experimental-webgl');
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const params = {};
+    for (const name of ['VENDOR','RENDERER','VERSION','SHADING_LANGUAGE_VERSION','MAX_TEXTURE_SIZE',
+      'MAX_RENDERBUFFER_SIZE','MAX_VIEWPORT_DIMS','MAX_VERTEX_ATTRIBS','MAX_VARYING_VECTORS',
+      'MAX_VERTEX_UNIFORM_VECTORS','MAX_FRAGMENT_UNIFORM_VECTORS','MAX_TEXTURE_IMAGE_UNITS',
+      'MAX_COMBINED_TEXTURE_IMAGE_UNITS','MAX_CUBE_MAP_TEXTURE_SIZE','ALIASED_LINE_WIDTH_RANGE',
+      'ALIASED_POINT_SIZE_RANGE','RED_BITS','GREEN_BITS','BLUE_BITS','ALPHA_BITS','DEPTH_BITS','STENCIL_BITS']) {
+      try {
+        const v = gl.getParameter(gl[name]);
+        params[gl[name]] = ArrayBuffer.isView(v) ? [...v] : v;
+      } catch (e) {}
+    }
+    if (dbg) {
+      params[dbg.UNMASKED_VENDOR_WEBGL] = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+      params[dbg.UNMASKED_RENDERER_WEBGL] = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+    }
+    profile.misc.webgl = {
+      params,
+      extensions: gl.getSupportedExtensions(),
+      attributes: gl.getContextAttributes(),
+      precision: (() => {
+        const out = {};
+        for (const s of ['VERTEX_SHADER', 'FRAGMENT_SHADER'])
+          for (const p of ['LOW_FLOAT', 'MEDIUM_FLOAT', 'HIGH_FLOAT', 'LOW_INT', 'MEDIUM_INT', 'HIGH_INT']) {
+            const f = gl.getShaderPrecisionFormat(gl[s], gl[p]);
+            if (f) out[s + '.' + p] = { rangeMin: f.rangeMin, rangeMax: f.rangeMax, precision: f.precision };
+          }
+        return out;
+      })(),
+    };
+  } catch (e) { profile.misc.webglError = String(e); }
+
+  // audio
+  try {
+    const ctx = new OfflineAudioContext(1, 44100, 44100);
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 10000;
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -50; comp.knee.value = 40; comp.ratio.value = 12;
+    comp.attack.value = 0; comp.release.value = 0.25;
+    osc.connect(comp); comp.connect(ctx.destination);
+    osc.start(0);
+    profile.misc.audio = { pending: true, sampleRate: ctx.sampleRate };
+    ctx.startRendering().then(buf => {
+      const data = buf.getChannelData(0);
+      let sum = 0;
+      for (let i = 4500; i < 5000; i++) sum += Math.abs(data[i]);
+      profile.misc.audio = { sum, sampleRate: ctx.sampleRate, slice: [...data.slice(4500, 4510)] };
+      emit();
+    }).catch(() => {});
+  } catch (e) { profile.misc.audioError = String(e); }
+
+  // ---- text metrics -------------------------------------------------------
+  // Font detection compares widths family by family, so one table per family
+  // is what reproduces it. Kerning is sparse but moves a width by a pixel,
+  // and line height is not a fixed ratio, so all three are measured.
+  try {
+    const FAMS = ['Arial','Arial Black','Arial Narrow','Arial Rounded MT Bold','Helvetica',
+      'Helvetica Neue','Times','Times New Roman','Courier','Courier New','Georgia','Palatino',
+      'Palatino Linotype','Book Antiqua','Garamond','Bookman','Comic Sans MS','Trebuchet MS',
+      'Impact','Verdana','Tahoma','Geneva','Lucida Grande','Lucida Console','Lucida Sans Unicode',
+      'Monaco','Menlo','Consolas','Andale Mono','Optima','Futura','Gill Sans','Baskerville',
+      'Didot','American Typewriter','Copperplate','Papyrus','Brush Script MT','Chalkduster',
+      'Marker Felt','Zapfino','Apple Chancery','Hoefler Text','Avenir','Avenir Next',
+      'Segoe UI','Roboto','Cambria','Calibri','Candara','Constantia','Corbel',
+      'Franklin Gothic Medium','MS Gothic','MS PGothic','MS Sans Serif','MS Serif','Sylfaen',
+      'Symbol','Webdings','Wingdings','Noto Sans','Open Sans','PT Sans','Ubuntu','Droid Sans',
+      'system-ui','-apple-system','sans-serif','serif','monospace','cursive','fantasy',
+      // The families this challenge probes by name, so presence is decided
+      // the same way it decides it.
+      'Comic Sans MS', 'Sego UI', 'Calibri', 'Cambria', 'Tahoma', 'Palatino', 'San Francisco', 'Helvetica Neue', 'Apple SD Gothic Neo', 'SF Compact Display', 'Liberation Sans', 'DejaVu Sans', 'ubuntu', 'Roboto', 'Noto Sans', 'Droid Sans', 'Product Sans', 'SimSun', 'Microsoft YaHei', 'Songti', 'Kaiti', 'PingFang', 'Heiti', 'SimHei', 'PT Sans', 'Cascadia Code', 'Cascadia Mono', 'Bahnschrift', 'Ink Free', 'Segoe UI Historic', 'Segoe UI Emoji', 'Sitka Text', 'Leelawadee UI', 'Gadugi', 'Nirmala UI', 'Kefa III', 'PingFang MO', 'BIZ UDGothic', 'BIZ UDMincho', 'STIX Two Math', 'STIX Two Text', 'Grantha Sangam MN', 'Galvji', 'MuktaMahee Regular', 'roboto-flex', 'source-sans-pro', 'sans-serif-light', 'serif-monospace'];
+    const SIZES = [8,9,10,11,12,13,14,15,16,18,20,22,24,28,32,36,40,48,56,64,72,96,128];
+    const fctx = document.createElement('canvas').getContext('2d');
+    const chars = [];
+    for (let c = 32; c <= 126; c++) chars.push(String.fromCharCode(c));
+    const span = document.createElement('span');
+    span.style.cssText = 'position:absolute;left:-9999px;white-space:nowrap;';
+    document.body.appendChild(span);
+    span.textContent = 'Hg';
+
+    const advTables = [], advIndex = {}, advSeen = {};
+    const kernTables = [], kernIndex = {}, kernSeen = {};
+    const heights = {};
+    const probe = 'mmmmmmmmmmlliWQ@';
+    const base = {};
+    for (const g of ['sans-serif', 'serif', 'monospace']) {
+      fctx.font = '72px ' + g;
+      base[g] = fctx.measureText(probe).width;
+    }
+    const present = [];
+    for (const f of FAMS.concat(['__default__'])) {
+      const fam = f === '__default__' ? '__veri_missing_font__' : f;
+      fctx.font = '16px "' + fam + '"';
+      const adv = chars.map((ch) => fctx.measureText(ch).width);
+      const kern = {};
+      const one = {};
+      chars.forEach((ch, i) => { one[ch] = adv[i]; });
+      for (const a of chars) {
+        for (const b of chars) {
+          const d = fctx.measureText(a + b).width - (one[a] + one[b]);
+          if (d !== 0) kern[a + b] = d;
+        }
+      }
+      const ak = JSON.stringify(adv);
+      if (!(ak in advSeen)) { advSeen[ak] = advTables.length; advTables.push(adv); }
+      advIndex[f] = advSeen[ak];
+      const kk = JSON.stringify(kern);
+      if (!(kk in kernSeen)) { kernSeen[kk] = kernTables.length; kernTables.push(kern); }
+      kernIndex[f] = kernSeen[kk];
+
+      span.style.fontFamily = '"' + fam + '"';
+      const h = {};
+      for (const px of SIZES) { span.style.fontSize = px + 'px'; h[px] = span.offsetHeight; }
+      fctx.font = '16px "' + fam + '"';
+      const m = fctx.measureText('Hg');
+      heights[f] = { h: h, a: m.fontBoundingBoxAscent, d: m.fontBoundingBoxDescent };
+
+      if (f !== '__default__') {
+        let differs = 0;
+        for (const g of ['sans-serif', 'serif', 'monospace']) {
+          fctx.font = '72px "' + fam + '",' + g;
+          if (fctx.measureText(probe).width !== base[g]) differs++;
+        }
+        if (differs === 3 || ['sans-serif','serif','monospace','cursive','fantasy'].includes(f)) {
+          present.push(f);
+        }
+      }
+    }
+    span.remove();
+    profile.misc.fonts = {
+      present: present, first: 32, refSize: 16, heights: heights,
+      advances: { tables: advTables, index: advIndex },
+      kerning: { tables: kernTables, index: kernIndex },
+    };
+  } catch (e) { profile.misc.fontsError = String(e); }
+
+  // ---- media -------------------------------------------------------------
+  // canPlayType is irregular enough that a rule cannot stand in for it.
+  try {
+    const v = document.createElement('video');
+    const TYPES = ['video/mp4','video/webm','video/ogg','video/3gpp','video/quicktime',
+      'video/x-matroska','video/mpeg','video/mp2t','video/mp4; codecs="avc1.42E01E"',
+      'video/mp4; codecs="avc1.42E01E, mp4a.40.2"','video/mp4; codecs="avc1.4D401E"',
+      'video/mp4; codecs="avc1.64001E"','video/mp4; codecs="hvc1.1.6.L93.B0"',
+      'video/mp4; codecs="hev1.1.6.L93.B0"','video/mp4; codecs="av01.0.05M.08"',
+      'video/mp4; codecs="av01.0.08M.08"','video/mp4; codecs="mp4a.40.2"',
+      'video/webm; codecs="vp8"','video/webm; codecs="vp9"','video/webm; codecs="vp8, vorbis"',
+      'video/webm; codecs="vp9, opus"','video/webm; codecs="av01.0.05M.08"',
+      'video/ogg; codecs="theora"','video/ogg; codecs="theora, vorbis"',
+      'audio/mpeg','audio/mp4','audio/ogg','audio/wav','audio/webm','audio/aac','audio/flac',
+      'audio/mp3','audio/mpegurl','audio/x-m4a','audio/3gpp','application/x-mpegURL',
+      'audio/mp4; codecs="mp4a.40.2"','audio/ogg; codecs="vorbis"','audio/ogg; codecs="opus"',
+      'audio/webm; codecs="vorbis"','audio/webm; codecs="opus"','audio/wav; codecs="1"',
+      'audio/mpeg; codecs="mp3"'];
+    const cpt = {}, mr = {};
+    for (const t of TYPES) {
+      cpt[t] = v.canPlayType(t);
+      cpt[t.replace(/;\s*$/, '') + ';'] = v.canPlayType(t.replace(/;\s*$/, '') + ';');
+      try { mr[t] = String(MediaRecorder.isTypeSupported(t)); } catch (e) { mr[t] = 'false'; }
+    }
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    profile.misc.media = {
+      canPlayType: cpt, mediaRecorder: mr,
+      audio: { sampleRate: ac.sampleRate, baseLatency: ac.baseLatency,
+               outputLatency: ac.outputLatency, state: ac.state,
+               maxChannelCount: ac.destination.maxChannelCount,
+               numberOfInputs: ac.destination.numberOfInputs,
+               numberOfOutputs: ac.destination.numberOfOutputs,
+               channelCount: ac.destination.channelCount },
+    };
+    ac.close();
+  } catch (e) { profile.misc.mediaError = String(e); }
+
+  // ---- WebGL parameters, extensions and shader precision -----------------
+  try {
+    const grab = (ctx) => {
+      const into = {};
+      if (!ctx) return into;
+      // The 0x8000 block plus the handful of constants that sit below it -
+      // MAX_TEXTURE_SIZE, the depth and stencil bits, the alias ranges.
+      const EXTRA = [0x0D33, 0x846D, 0x846E, 0x0B21, 0x0B12, 0x8869, 0x8DFB, 0x8DFC,
+        0x8B4D, 0x8872, 0x8B4C, 0x8DFD, 0x8B49, 0x8B4A, 0x0D3A, 0x84E8, 0x851C,
+        0x8073, 0x80E9, 0x8A2B, 0x8A2D, 0x8A30, 0x8C8A, 0x8C8B];
+      const read = (p) => {
+        try {
+          const val = ctx.getParameter(p);
+          if (val === null || val === undefined) return;
+          if (typeof val === 'object' && val.length !== undefined) into[p] = Array.from(val);
+          else if (typeof val !== 'object') into[p] = val;
+        } catch (e) {}
+      };
+      for (let p = 0x8000; p < 0x9600; p++) read(p);
+      for (const p of EXTRA) read(p);
+      return into;
+    };
+    const g1 = document.createElement('canvas').getContext('webgl');
+    const g2 = document.createElement('canvas').getContext('webgl2');
+    const shader = {};
+    try {
+      for (const st of ['VERTEX_SHADER', 'FRAGMENT_SHADER']) {
+        for (const pt of ['LOW_FLOAT','MEDIUM_FLOAT','HIGH_FLOAT','LOW_INT','MEDIUM_INT','HIGH_INT']) {
+          const f = g1.getShaderPrecisionFormat(g1[st], g1[pt]);
+          shader[st + '.' + pt] = [f.rangeMin, f.rangeMax, f.precision];
+        }
+      }
+    } catch (e) {}
+    profile.misc.webglParams = {
+      gl1: grab(g1), gl2: grab(g2), shader: shader,
+      ext1: (g1 && g1.getSupportedExtensions()) || [],
+      ext2: (g2 && g2.getSupportedExtensions()) || [],
+    };
+  } catch (e) { profile.misc.webglParamsError = String(e); }
+
+  // ---- media queries, system fonts, memory, navigation timing ------------
+  try {
+    const MQ = ['(any-pointer: fine)','(any-pointer: coarse)','(any-pointer: none)',
+      '(pointer: fine)','(pointer: coarse)','(any-hover: hover)','(any-hover: none)',
+      '(hover: hover)','(hover: none)','(color-gamut: srgb)','(color-gamut: p3)',
+      '(color-gamut: rec2020)','(dynamic-range: standard)','(dynamic-range: high)',
+      '(display-mode: browser)','(display-mode: standalone)','(display-mode: fullscreen)',
+      '(prefers-color-scheme: dark)','(prefers-color-scheme: light)',
+      '(prefers-reduced-motion: reduce)','(prefers-reduced-transparency: reduce)',
+      '(prefers-contrast: more)','(forced-colors: active)','(inverted-colors: inverted)',
+      '(monochrome)','(orientation: landscape)','(orientation: portrait)',
+      '(scripting: enabled)','(update: fast)','(overflow-block: scroll)',
+      '(video-dynamic-range: high)','(-webkit-transform-3d)'];
+    const mq = {};
+    for (const q of MQ) { try { mq[q] = matchMedia(q).matches; } catch (e) {} }
+    profile.misc.mediaQueries = mq;
+
+    const sys = {};
+    for (const f of ['caption','icon','menu','message-box','small-caption','status-bar']) {
+      const d = document.createElement('div');
+      d.style.font = f;
+      document.body.appendChild(d);
+      const cs = getComputedStyle(d);
+      sys[f] = { family: cs.fontFamily, size: cs.fontSize, weight: cs.fontWeight };
+      d.remove();
+    }
+    profile.misc.systemFonts = sys;
+    profile.misc.language = navigator.language;
+    profile.misc.languages = [...navigator.languages];
+    if (performance.memory) {
+      profile.misc.memory = {
+        jsHeapSizeLimit: performance.memory.jsHeapSizeLimit,
+        totalJSHeapSize: performance.memory.totalJSHeapSize,
+        usedJSHeapSize: performance.memory.usedJSHeapSize,
+      };
+    }
+    // Deliberately not taken here: this runs during load, so domComplete and
+    // friends are still 0, and a page served locally has no real connect
+    // phase. Captured after load instead, and only if it looks complete.
+
+  } catch (e) { profile.misc.miscError = String(e); }
+
+  // ---- the asynchronous ones ---------------------------------------------
+  // The full CSS property set and a real element's computed values: a
+  // declaration that accepts any name claims properties this browser does not
+  // have, and twenty computed defaults answer '' for the other four hundred.
+  try {
+    const probe = document.createElement('div');
+    document.body.appendChild(probe);
+    const names = [];
+    for (const k in probe.style) names.push(k);
+    profile.misc.cssProperties = names;
+    const cs = getComputedStyle(probe);
+    const computed = {};
+    for (let i = 0; i < cs.length; i++) {
+      const n = cs.item(i);
+      if (n !== 'width' && n !== 'height') computed[n] = cs.getPropertyValue(n);
+    }
+    profile.misc.computedStyle = computed;
+    probe.remove();
+  } catch (e) {}
+
+  const pending = [];
+  pending.push((async () => {
+    try {
+      const m = await navigator.keyboard.getLayoutMap();
+      const entries = [];
+      for (const [k, v] of m) entries.push([k, v]);
+      profile.misc.keyboardLayout = entries;
+    } catch (e) {}
+  })());
+  // Needs a secure context: served over plain http this yields nothing and
+  // the shipped value is kept.
+  pending.push((async () => {
+    try {
+      const b = await navigator.getBattery();
+      profile.misc.battery = {
+        charging: b.charging,
+        chargingTime: b.chargingTime === Infinity ? 'Infinity' : b.chargingTime,
+        dischargingTime: b.dischargingTime === Infinity ? 'Infinity' : b.dischargingTime,
+        level: b.level,
+      };
+    } catch (e) {}
+  })());
+  // Voices load asynchronously and the list is large; a collector counts the
+  // local ones, the remote ones and the distinct languages.
+  pending.push(new Promise((done) => {
+    let settled = false;
+    const grab = () => {
+      if (settled) return;
+      const v = speechSynthesis.getVoices();
+      if (!v.length) return;
+      settled = true;
+      profile.misc.voices = v.map((x) => ({
+        name: x.name, lang: x.lang, default: x.default,
+        localService: x.localService, voiceURI: x.voiceURI,
+      }));
+      done();
+    };
+    grab();
+    if (!settled) {
+      try { speechSynthesis.addEventListener('voiceschanged', grab); } catch (e) {}
+      setTimeout(() => { settled = true; done(); }, 3000);
+    }
+  }));
+  try {
+    profile.misc.connection = {
+      effectiveType: navigator.connection.effectiveType,
+      rtt: navigator.connection.rtt,
+      downlink: navigator.connection.downlink,
+      saveData: navigator.connection.saveData,
+    };
+  } catch (e) {}
+  pending.push((async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      profile.misc.mediaDevices = {
+        constraints: navigator.mediaDevices.getSupportedConstraints(),
+        devices: devices.map((d) => ({ kind: d.kind, label: d.label,
+                                       deviceId: d.deviceId, groupId: d.groupId })),
+      };
+    } catch (e) {}
+  })());
+  pending.push(new Promise((done) => {
+    const grabNav = () => setTimeout(() => {
+      try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        if (nav && nav.domComplete > 0) {
+          const o = {};
+          for (const k in nav) { if (typeof nav[k] !== 'function') o[k] = nav[k]; }
+          profile.misc.performance = { navigation: o };
+        }
+      } catch (e) {}
+      done();
+    }, 50);
+    if (document.readyState === 'complete') grabNav();
+    else addEventListener('load', grabNav);
+  }));
+  try {
+    pending.push(navigator.storage.estimate().then((s) => {
+      profile.misc.storage = { quota: s.quota, usage: s.usage };
+    }).catch(() => {}));
+  } catch (e) {}
+  try {
+    pending.push(navigator.userAgentData.getHighEntropyValues(
+      ['architecture','bitness','model','platformVersion','uaFullVersion','wow64','formFactors']
+    ).then((u) => { profile.misc.uaData = u; }).catch(() => {}));
+  } catch (e) {}
+  try {
+    pending.push(navigator.gpu.requestAdapter().then(async (a) => {
+      if (!a) return;
+      const limits = {};
+      for (const k in a.limits) limits[k] = a.limits[k];
+      // Not sorted: a Set iterates in insertion order and that order is read
+      // back, so sorting it for tidiness is destroying the thing being copied.
+      const info = {};
+      if (a.info) {
+        for (const k in a.info) {
+          const val = a.info[k];
+          if (typeof val !== 'function' && typeof val !== 'object') info[k] = val;
+        }
+        let pr = Object.getPrototypeOf(a.info);
+        while (pr && pr !== Object.prototype) {
+          for (const k of Object.getOwnPropertyNames(pr)) {
+            if (k === 'constructor') continue;
+            try {
+              const val = a.info[k];
+              if (typeof val !== 'function' && typeof val !== 'object') info[k] = val;
+            } catch (e) {}
+          }
+          pr = Object.getPrototypeOf(pr);
+        }
+      }
+      const dev = await a.requestDevice().catch(() => null);
+      const devLimits = {};
+      if (dev) for (const k in dev.limits) devLimits[k] = dev.limits[k];
+      profile.misc.gpu = {
+        features: [...a.features], limits: limits, info: info,
+        wgsl: [...(navigator.gpu.wgslLanguageFeatures || [])],
+        preferredFormat: navigator.gpu.getPreferredCanvasFormat(),
+        isFallbackAdapter: a.isFallbackAdapter === true,
+        deviceFeatures: dev ? [...dev.features] : [],
+        deviceLimits: devLimits,
+      };
+    }).catch(() => {}));
+  } catch (e) {}
+  // allSettled, and a deadline: one collector that never settles used to mean
+  // the profile was written without any of the asynchronous sections.
+  if (pending.length) {
+    Promise.race([
+      Promise.allSettled(pending),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]).then(emit, emit);
+  }
+
+  function emit() {
+    const json = JSON.stringify(profile);
+    // The profile is around half a megabyte, so selecting it out of the page
+    // is not practical - most things that carry text truncate it silently.
+    // Downloading it is the only reliable way to move it in one piece.
+    const btn = document.getElementById('save');
+    btn.disabled = false;
+    btn.onclick = function () {
+      const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'veri-profile.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+    document.getElementById('note').textContent =
+      'Chrome ' + (profile.meta.chrome || '?') + ' · ' +
+      Object.keys(profile.globals).length + ' globals · ' +
+      Object.keys(profile.prototypes).length + ' prototypes · ' +
+      Math.round(json.length / 1024) + ' KB';
+    // Kept for the headless path, which reads the markers out of --dump-dom.
+    document.getElementById('out').textContent =
+      '@@PROFILE_START@@' + json + '@@PROFILE_END@@';
+  }
+  emit();
+})();
+function emit() {}
+</script>

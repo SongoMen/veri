@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+
+crates/veri-js/captures/
+
+node_modules/
+*.tgz
+
+.DS_Store
+
+clients/node/npm/*/bin/
+clients/node/bin/
+
+# Benchmark targets are the operator's own
+tools/bench/targets.json
+
+secrets/
+
+clients/node/npm/*/THIRD-PARTY-LICENSES.md
+clients/node/npm/*/LICENSE

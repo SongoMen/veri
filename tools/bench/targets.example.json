@@ -1,0 +1,20 @@
+[
+  {
+    "name": "none",
+    "url": "https://example.org/",
+    "floor": 1000,
+    "markers": []
+  },
+  {
+    "name": "cloudflare",
+    "url": "https://example.com/",
+    "floor": 50000,
+    "markers": ["_cf_chl_opt"]
+  },
+  {
+    "name": "awswaf",
+    "url": "https://example.com/",
+    "floor": 500000,
+    "markers": ["gokuProps"]
+  }
+]

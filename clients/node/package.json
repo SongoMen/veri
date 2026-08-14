@@ -1,0 +1,50 @@
+{
+  "name": "veri-http",
+  "version": "0.1.0",
+  "description": "An HTTP client that sees what a browser sees: an identity ladder with per-host memory, browser-accurate TLS fingerprinting, and the page's own JavaScript run in-process when a page needs it.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "build.js",
+    "scripts/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "build:platform": "node scripts/build-platform-package.js",
+    "test": "node tests/index.js",
+    "test:live": "node tests/live.js"
+  },
+  "keywords": [
+    "http",
+    "client",
+    "javascript",
+    "browser-environment",
+    "v8",
+    "tls-fingerprint",
+    "scraping",
+    "cloudflare"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/songomen/veri.git",
+    "directory": "clients/node"
+  },
+  "homepage": "https://github.com/songomen/veri#readme",
+  "bugs": {
+    "url": "https://github.com/songomen/veri/issues"
+  },
+  "optionalDependencies": {
+    "veri-http-darwin-arm64": "0.1.0",
+    "veri-http-darwin-x64": "0.1.0",
+    "veri-http-linux-x64": "0.1.0",
+    "veri-http-linux-arm64": "0.1.0",
+    "veri-http-win32-x64": "0.1.0"
+  }
+}

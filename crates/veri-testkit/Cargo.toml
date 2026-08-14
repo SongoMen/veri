@@ -1,0 +1,11 @@
+[package]
+name = "veri-testkit"
+description = "Test scaffolding shared by the veri integrations. Not published."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+veri-core = { path = "../veri-core", version = "0.1.0" }

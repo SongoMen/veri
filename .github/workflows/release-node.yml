@@ -1,0 +1,103 @@
+name: release veri-http
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15 # Apple silicon
+            pkg: veri-http-darwin-arm64
+          - os: macos-15-intel # Intel
+            pkg: veri-http-darwin-x64
+          - os: ubuntu-latest
+            pkg: veri-http-linux-x64
+          - os: ubuntu-24.04-arm
+            pkg: veri-http-linux-arm64
+          - os: windows-latest
+            pkg: veri-http-win32-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: install cmake (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: sync version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: clients/node
+        run: node scripts/set-version.js "${{ github.ref }}"
+
+      - name: build platform package
+        working-directory: clients/node
+        run: node scripts/build-platform-package.js
+
+      - name: check the binary
+        working-directory: clients/node
+        shell: bash
+        run: |
+          BIN="npm/${{ matrix.pkg }}/bin/veri-daemon"
+          [ "${{ runner.os }}" = "Windows" ] && BIN="$BIN.exe"
+          echo '{"id":1,"method":"info"}' | "$BIN" | head -2 | grep -q '"ready":true'
+          echo "binary responds"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}
+          path: clients/node/npm/${{ matrix.pkg }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: clients/node/npm
+
+      - name: sync version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: clients/node
+        run: node scripts/set-version.js "${{ github.ref }}"
+
+      - name: restore the executable bit
+        working-directory: clients/node/npm
+        run: |
+          chmod +x */bin/veri-daemon
+          for f in */bin/veri-daemon; do
+            [ -x "$f" ] || { echo "not executable: $f"; exit 1; }
+          done
+
+      - name: publish platform packages
+        working-directory: clients/node/npm
+        run: |
+          for d in */; do
+            echo "publishing ${d%/}"
+            npm publish "$d" --access public
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: publish veri-http
+        working-directory: clients/node
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,24 @@
+[package]
+name = "veri"
+description = "An HTTP client that sees what a browser sees: an identity ladder with per-host memory, warm sessions, retries, browser-accurate TLS fingerprinting over wreq, and the page's own JavaScript run in-process when a page needs it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["http-client", "tls-fingerprint", "browser", "javascript", "identity"]
+categories = ["web-programming::http-client", "network-programming"]
+
+[dependencies]
+veri-core = { path = "../veri-core", version = "0.1.0" }
+wreq.workspace = true
+wreq-util.workspace = true
+tokio = { workspace = true, features = ["time"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+veri-integrations = { path = "../veri-integrations", version = "0.1.0" }

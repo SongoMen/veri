@@ -1,0 +1,17 @@
+[package]
+name = "veri-integrations"
+description = "Bot-protection integrations for the veri client: Cloudflare, DataDome, AWS WAF, PerimeterX and Vercel. Not affiliated with any of them."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["cloudflare", "http-client", "browser", "challenge"]
+categories = ["web-programming::http-client"]
+exclude = ["tests"]
+
+[dependencies]
+veri-core = { path = "../veri-core", version = "0.1.0" }
+
+[dev-dependencies]
+veri-testkit = { path = "../veri-testkit" }

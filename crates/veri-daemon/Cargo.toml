@@ -1,0 +1,23 @@
+[package]
+name = "veri-daemon"
+description = "Drives the veri client from another language over newline-delimited JSON on stdio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+readme = "../../README.md"
+keywords = ["http-client", "browser", "stdio", "json"]
+categories = ["web-programming::http-client"]
+
+[dependencies]
+veri = { path = "../veri", version = "0.1.0" }
+veri-integrations = { path = "../veri-integrations", version = "0.1.0" }
+veri-js = { path = "../veri-js", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[[bin]]
+name = "veri-daemon"
+path = "src/main.rs"

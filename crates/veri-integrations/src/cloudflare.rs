@@ -43,16 +43,33 @@ impl Cloudflare {
             || parts.headers.contains("cf-mitigated")
     }
 
+    fn challenge_type(body: &str) -> Option<&str> {
+        let at = body.find("cType")?;
+        let window = &body[at + 5..(at + 45).min(body.len())];
+        let colon = window.find(':')?;
+        let rest = &window[colon + 1..];
+        let open = rest.find(['\'', '"'])?;
+        let quote = rest.as_bytes()[open];
+        let value = &rest[open + 1..];
+        let end = value.bytes().position(|b| b == quote)?;
+        Some(&value[..end])
+    }
+
     pub fn demand(parts: &ResponseParts<'_>) -> Option<Demand> {
-        if parts.headers.get("cf-mitigated") == Some("challenge") {
-            return Some(Demand::Script);
-        }
-        if !Self::is_present(parts) {
+        let mitigated = parts.headers.get("cf-mitigated") == Some("challenge");
+        if !mitigated && !Self::is_present(parts) {
             return None;
         }
-        let challenged = parts.body.contains(CONFIG_OBJECT)
+        let challenged = mitigated
+            || parts.body.contains(CONFIG_OBJECT)
             || (!(200..300).contains(&parts.status) && parts.body.contains(INTERSTITIAL_TITLE));
-        challenged.then_some(Demand::Script)
+        if !challenged {
+            return None;
+        }
+        Some(match Self::challenge_type(parts.body) {
+            Some("interactive") | Some("captcha") => Demand::Captcha,
+            _ => Demand::Script,
+        })
     }
 }
 

@@ -10,7 +10,7 @@ keywords = ["http-client", "tls-fingerprint", "browser", "javascript", "identity
 categories = ["web-programming::http-client", "network-programming"]
 
 [dependencies]
-veri-core = { path = "../veri-core", version = "0.1.0" }
+veri-core = { path = "../veri-core", version = "0.2.0" }
 wreq.workspace = true
 wreq-util.workspace = true
 tokio = { workspace = true, features = ["time"] }
@@ -21,4 +21,4 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-veri-integrations = { path = "../veri-integrations", version = "0.1.0" }
+veri-integrations = { path = "../veri-integrations", version = "0.2.0" }

@@ -262,12 +262,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let host = veri::host_of(&target).unwrap_or_default();
                 if with_solver.has_clearance(&host) {
                     println!("      a clearance cookie was issued for {host}");
-                    r.fail(
-                        "clearance was issued but the page still challenged, so the\n         \
-                         challenge was not accepted. Holding the cookie is not the same as\n         \
-                         passing: check whether real Chrome opens this url from this address\n         \
-                         before concluding anything about the host.",
-                    );
+                    r.fail("clearance was issued but the page still challenged");
                 } else {
                     r.fail("solver did not obtain clearance");
                 }

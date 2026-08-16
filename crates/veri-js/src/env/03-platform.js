@@ -43,10 +43,18 @@
     }
   };
 
+  const __own = (globalThis.__own = (o, k, v) =>
+    Object.defineProperty(o, k, {
+      value: v,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    }));
+
   globalThis.Blob = function Blob(parts, opts) {
     this.__bytes = __blobBytes(parts);
-    this.type = opts && opts.type ? String(opts.type) : '';
-    this.size = this.__bytes.length;
+    __own(this, 'type', opts && opts.type ? String(opts.type) : '');
+    __own(this, 'size', this.__bytes.length);
     this.text = () => Promise.resolve(globalThis.__bytesToText(this.__bytes));
     this.arrayBuffer = () => Promise.resolve(this.__bytes.slice().buffer);
     this.slice = (a, b, t) => {
@@ -57,7 +65,7 @@
 
   globalThis.FileReader = function FileReader() {
     this.readyState = 0;
-    this.result = null;
+    __own(this, 'result', null);
     this.error = null;
     this.onload = null;
     this.onloadend = null;
@@ -95,7 +103,7 @@
     },
     __finish(result) {
       this.readyState = 2;
-      this.result = result;
+      __own(this, 'result', result);
       const fire = (type) => {
         const ev = { type, target: this, loaded: this.result ? this.result.length : 0, total: 0 };
         const h = this['on' + type];
@@ -183,6 +191,24 @@
     },
   };
 
+  const __defineIface = (name, ctor, proto) => {
+    try {
+      Object.defineProperty(proto, 'constructor', {
+        value: ctor,
+        writable: true,
+        configurable: true,
+      });
+      ctor.prototype = proto;
+      Object.defineProperty(ctor, 'name', { value: name, configurable: true });
+      Object.defineProperty(globalThis, name, {
+        value: ctor,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch (e) {}
+  };
+
   globalThis.Headers = function Headers(init) {
     this.__pairs = [];
     if (init) {
@@ -220,22 +246,247 @@
         if (this.__pairs[i][0] === n) this.__pairs.splice(i, 1);
       }
     },
+    // A browser iterates headers sorted by name, not in insertion order.
+    __sorted() {
+      return this.__pairs.slice().sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    },
     forEach(fn, self) {
-      for (const [k, v] of this.__pairs.slice()) fn.call(self, v, k, this);
+      for (const [k, v] of this.__sorted()) fn.call(self, v, k, this);
     },
     keys() {
-      return this.__pairs.map((p) => p[0])[Symbol.iterator]();
+      return this.__sorted()
+        .map((p) => p[0])
+        [Symbol.iterator]();
     },
     values() {
-      return this.__pairs.map((p) => p[1])[Symbol.iterator]();
+      return this.__sorted()
+        .map((p) => p[1])
+        [Symbol.iterator]();
     },
     entries() {
-      return this.__pairs.map((p) => [p[0], p[1]])[Symbol.iterator]();
+      return this.__sorted()
+        .map((p) => [p[0], p[1]])
+        [Symbol.iterator]();
     },
     [Symbol.iterator]() {
       return this.entries();
     },
   };
+
+  (function () {
+    const SIG = function AbortSignal() {
+      throw new TypeError('Illegal constructor');
+    };
+    const sigProto = {
+      get aborted() {
+        return this.__aborted === true;
+      },
+      get reason() {
+        return this.__reason;
+      },
+      throwIfAborted() {
+        if (this.__aborted) throw this.__reason;
+      },
+      addEventListener(type, fn) {
+        (this.__ls || (this.__ls = [])).push([type, fn]);
+      },
+      removeEventListener(type, fn) {
+        this.__ls = (this.__ls || []).filter((e) => !(e[0] === type && e[1] === fn));
+      },
+      dispatchEvent() {
+        return true;
+      },
+      onabort: null,
+    };
+    __defineIface('AbortSignal', SIG, sigProto);
+    const makeSignal = () => {
+      const s = Object.create(sigProto);
+      s.__aborted = false;
+      s.__reason = undefined;
+      return s;
+    };
+    SIG.abort = (reason) => {
+      const s = makeSignal();
+      s.__aborted = true;
+      s.__reason =
+        reason === undefined
+          ? new (globalThis.DOMException || Error)('signal is aborted without reason', 'AbortError')
+          : reason;
+      return s;
+    };
+    SIG.timeout = () => makeSignal();
+
+    const AC = function AbortController() {
+      this.__signal = makeSignal();
+    };
+    __defineIface('AbortController', AC, {
+      get signal() {
+        return this.__signal;
+      },
+      abort(reason) {
+        const s = this.__signal;
+        if (s.__aborted) return;
+        s.__aborted = true;
+        s.__reason =
+          reason === undefined
+            ? new (globalThis.DOMException || Error)(
+                'signal is aborted without reason',
+                'AbortError',
+              )
+            : reason;
+        const ev = { type: 'abort', target: s, currentTarget: s };
+        try {
+          if (typeof s.onabort === 'function') s.onabort.call(s, ev);
+        } catch (e) {}
+        for (const [t, fn] of s.__ls || []) {
+          if (t === 'abort') {
+            try {
+              typeof fn === 'function' ? fn.call(s, ev) : fn.handleEvent(ev);
+            } catch (e) {}
+          }
+        }
+      },
+    });
+
+    const absolute = (u) => {
+      try {
+        return globalThis.__absolute ? globalThis.__absolute(String(u)) : String(u);
+      } catch (e) {
+        return String(u);
+      }
+    };
+    const REQ = function Request(input, init) {
+      const o = init || {};
+      const from = input && input.__isRequest ? input : null;
+      this.__isRequest = true;
+      this.__url = absolute(from ? from.url : input);
+      this.__method = String(o.method || (from && from.method) || 'GET').toUpperCase();
+      this.__headers = new globalThis.Headers(o.headers || (from && from.headers) || undefined);
+      this.__body = o.body !== undefined ? o.body : from ? from.__body : null;
+      this.__mode = o.mode || 'cors';
+      this.__credentials = o.credentials || 'same-origin';
+      this.__cache = o.cache || 'default';
+      this.__redirect = o.redirect || 'follow';
+      this.__referrer = o.referrer === undefined ? 'about:client' : String(o.referrer);
+      this.__signal = o.signal || makeSignal();
+    };
+    __defineIface('Request', REQ, {
+      get url() {
+        return this.__url;
+      },
+      get method() {
+        return this.__method;
+      },
+      get headers() {
+        return this.__headers;
+      },
+      get mode() {
+        return this.__mode;
+      },
+      get credentials() {
+        return this.__credentials;
+      },
+      get cache() {
+        return this.__cache;
+      },
+      get redirect() {
+        return this.__redirect;
+      },
+      get referrer() {
+        return this.__referrer;
+      },
+      get signal() {
+        return this.__signal;
+      },
+      get bodyUsed() {
+        return false;
+      },
+      clone() {
+        return new REQ(this);
+      },
+      text() {
+        return Promise.resolve(this.__body == null ? '' : String(this.__body));
+      },
+      json() {
+        return this.text().then((t) => JSON.parse(t));
+      },
+      arrayBuffer() {
+        return Promise.resolve(new ArrayBuffer(0));
+      },
+    });
+
+    const RESP = function Response(body, init) {
+      const o = init || {};
+      this.__body = body === undefined ? null : body;
+      this.__status = o.status === undefined ? 200 : Number(o.status);
+      this.__statusText = o.statusText === undefined ? '' : String(o.statusText);
+      this.__headers = new globalThis.Headers(o.headers || undefined);
+      this.__url = o.url ? String(o.url) : '';
+      this.__type = 'default';
+    };
+    __defineIface('Response', RESP, {
+      get status() {
+        return this.__status;
+      },
+      get statusText() {
+        return this.__statusText;
+      },
+      get ok() {
+        return this.__status >= 200 && this.__status < 300;
+      },
+      get headers() {
+        return this.__headers;
+      },
+      get url() {
+        return this.__url;
+      },
+      get type() {
+        return this.__type;
+      },
+      get redirected() {
+        return false;
+      },
+      get bodyUsed() {
+        return false;
+      },
+      get body() {
+        return null;
+      },
+      clone() {
+        return new RESP(this.__body, {
+          status: this.__status,
+          statusText: this.__statusText,
+          headers: this.__headers,
+        });
+      },
+      text() {
+        return Promise.resolve(this.__body == null ? '' : String(this.__body));
+      },
+      json() {
+        return this.text().then((t) => JSON.parse(t));
+      },
+      arrayBuffer() {
+        return Promise.resolve(new ArrayBuffer(0));
+      },
+      blob() {
+        return Promise.resolve(new globalThis.Blob([this.__body == null ? '' : this.__body]));
+      },
+      formData() {
+        return Promise.resolve(new globalThis.FormData());
+      },
+    });
+    RESP.json = (data, init) => {
+      const r = new RESP(JSON.stringify(data), init);
+      r.__headers.set('content-type', 'application/json');
+      return r;
+    };
+    RESP.error = () => {
+      const r = new RESP(null, { status: 0 });
+      r.__type = 'error';
+      return r;
+    };
+    RESP.redirect = (url, status) => new RESP(null, { status: status || 302 });
+  })();
 
   globalThis.__formBoundary = function () {
     const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -924,11 +1175,22 @@
       const DTF = function DateTimeFormat(locales, options) {
         if (!(this instanceof DTF)) return new DTF(locales, options);
         const o = options || {};
+        const asked =
+          o.year ||
+          o.month ||
+          o.day ||
+          o.hour ||
+          o.minute ||
+          o.second ||
+          o.weekday ||
+          o.dateStyle ||
+          o.timeStyle;
         this.__opts = {
           locale: (Array.isArray(locales) ? locales[0] : locales) || 'en-US',
           calendar: 'gregory',
           numberingSystem: 'latn',
           timeZone: o.timeZone || tz,
+          ...(asked ? {} : { year: 'numeric', month: '2-digit', day: '2-digit' }),
           ...o,
         };
         return this;
@@ -979,6 +1241,10 @@
           useGrouping: o.useGrouping === undefined ? 'auto' : o.useGrouping,
           notation: 'standard',
           signDisplay: 'auto',
+          roundingIncrement: 1,
+          roundingMode: 'halfExpand',
+          roundingPriority: 'auto',
+          trailingZeroDisplay: 'auto',
           ...o,
         };
         return this;
@@ -1033,6 +1299,130 @@
         return Array.isArray(l) ? l.slice() : l ? [l] : [];
       };
       Intl.Collator = CO;
+    } catch (e) {}
+
+    try {
+      const PR = function PluralRules(locales, options) {
+        if (!(this instanceof PR))
+          throw new TypeError("Constructor Intl.PluralRules requires 'new'");
+        this.__type = (options && options.type) || 'cardinal';
+        this.__locale = (Array.isArray(locales) ? locales[0] : locales) || 'en-US';
+      };
+      PR.prototype.select = function (n) {
+        const v = Number(n);
+        if (this.__type === 'ordinal') {
+          const t = Math.abs(v) % 100,
+            u = Math.abs(v) % 10;
+          if (u === 1 && t !== 11) return 'one';
+          if (u === 2 && t !== 12) return 'two';
+          if (u === 3 && t !== 13) return 'few';
+          return 'other';
+        }
+        return v === 1 ? 'one' : 'other';
+      };
+      PR.prototype.selectRange = function (a, b) {
+        return this.select(b);
+      };
+      PR.prototype.resolvedOptions = function () {
+        return {
+          locale: this.__locale,
+          type: this.__type,
+          minimumIntegerDigits: 1,
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 3,
+          pluralCategories:
+            this.__type === 'ordinal' ? ['few', 'one', 'other', 'two'] : ['one', 'other'],
+          roundingIncrement: 1,
+          roundingMode: 'halfExpand',
+          roundingPriority: 'auto',
+          trailingZeroDisplay: 'auto',
+        };
+      };
+      PR.supportedLocalesOf = function (l) {
+        return Array.isArray(l) ? l.slice() : l ? [l] : [];
+      };
+      Intl.PluralRules = PR;
+
+      const LF = function ListFormat(locales, options) {
+        if (!(this instanceof LF))
+          throw new TypeError("Constructor Intl.ListFormat requires 'new'");
+        this.__locale = (Array.isArray(locales) ? locales[0] : locales) || 'en-US';
+        this.__type = (options && options.type) || 'conjunction';
+        this.__style = (options && options.style) || 'long';
+      };
+      LF.prototype.format = function (list) {
+        const a = Array.from(list || []).map(String);
+        if (!a.length) return '';
+        if (a.length === 1) return a[0];
+        const word = this.__type === 'disjunction' ? 'or' : this.__style === 'narrow' ? '' : 'and';
+        if (a.length === 2) return word ? a[0] + ' ' + word + ' ' + a[1] : a[0] + ', ' + a[1];
+        const head = a.slice(0, -1).join(', ');
+        return word ? head + ', ' + word + ' ' + a[a.length - 1] : head + ', ' + a[a.length - 1];
+      };
+      LF.prototype.formatToParts = function (list) {
+        const out = [];
+        const a = Array.from(list || []).map(String);
+        a.forEach((v, i) => {
+          if (i) out.push({ type: 'literal', value: i === a.length - 1 ? ' and ' : ', ' });
+          out.push({ type: 'element', value: v });
+        });
+        return out;
+      };
+      LF.prototype.resolvedOptions = function () {
+        return { locale: this.__locale, type: this.__type, style: this.__style };
+      };
+      LF.supportedLocalesOf = function (l) {
+        return Array.isArray(l) ? l.slice() : l ? [l] : [];
+      };
+      Intl.ListFormat = LF;
+
+      const RTF = function RelativeTimeFormat(locales, options) {
+        if (!(this instanceof RTF)) {
+          throw new TypeError("Constructor Intl.RelativeTimeFormat requires 'new'");
+        }
+        this.__locale = (Array.isArray(locales) ? locales[0] : locales) || 'en-US';
+        this.__numeric = (options && options.numeric) || 'always';
+        this.__style = (options && options.style) || 'long';
+      };
+      // `numeric: 'auto'` is what turns -1 day into "yesterday" rather than
+      // "1 day ago", and a check that asks for both compares the two.
+      const NAMED = {
+        day: { '-1': 'yesterday', 0: 'today', 1: 'tomorrow' },
+        year: { '-1': 'last year', 0: 'this year', 1: 'next year' },
+        month: { '-1': 'last month', 0: 'this month', 1: 'next month' },
+        week: { '-1': 'last week', 0: 'this week', 1: 'next week' },
+        quarter: { '-1': 'last quarter', 0: 'this quarter', 1: 'next quarter' },
+        hour: { 0: 'this hour' },
+        minute: { 0: 'this minute' },
+        second: { 0: 'now' },
+      };
+      RTF.prototype.format = function (value, unit) {
+        const v = Number(value);
+        const u = String(unit).replace(/s$/, '');
+        if (this.__numeric === 'auto') {
+          const named = NAMED[u];
+          if (named && Object.prototype.hasOwnProperty.call(named, String(v)))
+            return named[String(v)];
+        }
+        const n = Math.abs(v);
+        const plural = n === 1 ? u : u + 's';
+        return v < 0 ? n + ' ' + plural + ' ago' : 'in ' + n + ' ' + plural;
+      };
+      RTF.prototype.formatToParts = function (value, unit) {
+        return [{ type: 'literal', value: this.format(value, unit) }];
+      };
+      RTF.prototype.resolvedOptions = function () {
+        return {
+          locale: this.__locale,
+          style: this.__style,
+          numeric: this.__numeric,
+          numberingSystem: 'latn',
+        };
+      };
+      RTF.supportedLocalesOf = function (l) {
+        return Array.isArray(l) ? l.slice() : l ? [l] : [];
+      };
+      Intl.RelativeTimeFormat = RTF;
     } catch (e) {}
 
     try {

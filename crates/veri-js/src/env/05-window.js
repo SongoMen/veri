@@ -38,11 +38,44 @@
     doNotTrack: null,
     hardwareConcurrency: __IDENTITY.hardwareConcurrency,
     ...(/Chrome\//.test(__IDENTITY.ua) ? { deviceMemory: __IDENTITY.deviceMemory } : {}),
-    maxTouchPoints: 0,
+    maxTouchPoints: __IDENTITY.maxTouchPoints || 0,
     pdfViewerEnabled: true,
     webdriver: false,
     javaEnabled: () => false,
     getGamepads: () => [null, null, null, null],
+    locks: {
+      request(name, options, cb) {
+        const fn = typeof options === 'function' ? options : cb;
+        const lock = { name: String(name), mode: (options && options.mode) || 'exclusive' };
+        try {
+          return Promise.resolve(typeof fn === 'function' ? fn(lock) : undefined);
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      },
+      query() {
+        return Promise.resolve({ held: [], pending: [] });
+      },
+    },
+    userActivation: { hasBeenActive: false, isActive: false },
+    wakeLock: {
+      request: () => Promise.reject(new (globalThis.DOMException || Error)('WakeLock not allowed')),
+    },
+    mediaCapabilities: (function () {
+      const answer = (cfg) =>
+        Promise.resolve({
+          supported: true,
+          smooth: true,
+          powerEfficient: true,
+          configuration: cfg,
+        });
+      const mc = { decodingInfo: answer, encodingInfo: answer };
+      try {
+        const C = globalThis.MediaCapabilities;
+        if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(mc, C.prototype);
+      } catch (e) {}
+      return mc;
+    })(),
   };
   const __GREASE_BRAND = (function () {
     try {
@@ -121,12 +154,41 @@
     orientation: { angle: 0, type: 'landscape-primary' },
   };
 
+  const __applyHistoryUrl = (url) => {
+    if (url === undefined || url === null) return;
+    try {
+      const raw = String(url);
+      const loc = globalThis.location;
+      if (!loc) return;
+      const hashAt = raw.indexOf('#');
+      const queryAt = raw.indexOf('?');
+      if (raw.charAt(0) === '#') {
+        loc.hash = raw;
+      } else {
+        const path = raw.slice(0, queryAt >= 0 ? queryAt : hashAt >= 0 ? hashAt : raw.length);
+        if (path) loc.pathname = path.charAt(0) === '/' ? path : '/' + path;
+        loc.search = queryAt >= 0 ? raw.slice(queryAt, hashAt >= 0 ? hashAt : raw.length) : '';
+        loc.hash = hashAt >= 0 ? raw.slice(hashAt) : '';
+      }
+      loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+    } catch (e) {}
+  };
+
   const history = {
     length: 1,
     scrollRestoration: 'auto',
     state: null,
-    pushState() {},
-    replaceState() {},
+    // Both were no-ops, so a page that navigated with the History API saw its
+    // own url and state never change.
+    pushState(state, title, url) {
+      this.state = state === undefined ? null : state;
+      this.length += 1;
+      __applyHistoryUrl(url);
+    },
+    replaceState(state, title, url) {
+      this.state = state === undefined ? null : state;
+      __applyHistoryUrl(url);
+    },
     back() {},
     forward() {},
     go() {},
@@ -134,28 +196,108 @@
 
   const performance = {
     timeOrigin: Date.now(),
-    // Virtual time for scheduled waits, so a timer does not really sleep, plus the
-    // real time spent inside the current tick. Purely virtual made every piece of
-    // synchronous work measure as 0.1ms, and a challenge that divides bytes by
-    // elapsed then never converges - AWS WAF's bandwidth check loops forever on it.
     now: (() => {
       let last = 0;
       let tickVirt = -1;
       let tickReal = 0;
+      // The two engines round differently and a page reads the difference
+      // straight off the number. Firefox clamps to a whole millisecond
+      // (privacy.reduceTimerPrecision), so it answers 461, never 461.4.
+      const FIREFOX = !/Chrome\//.test(__IDENTITY.ua) && /Firefox\//.test(__IDENTITY.ua);
+      // Chrome's timestamps are not exact multiples of its quantum - they carry
+      // a small representation error, so a difference of two reads stringifies
+      // as 2.3000001907348633 rather than 2.3. Derived from the quantum itself,
+      // so repeated reads inside one quantum still return a single value.
+      const skew = (q) => {
+        // Chrome's small readings are exact (27.5) and its larger ones are not
+        // (1682.4000000953674, 5543.699999809265): the conversion error only
+        // shows once the magnitude outruns the precision carrying it.
+        if (q < 100) return 0;
+        const n = (Math.round(q * 10) * 2654435761) % 8192;
+        return (n / 8192 - 0.5) * 4.76837158203125e-7;
+      };
       return () => {
         const virt = globalThis.__NOW || 0;
         if (virt !== tickVirt) {
           tickVirt = virt;
           tickReal = Date.now();
         }
-        const t = virt + (Date.now() - tickReal);
-        last = t > last ? t : last + 0.0001;
-        return last;
+        const t = virt + (Date.now() - tickReal) + (globalThis.__TIME_COST || 0);
+        if (FIREFOX) {
+          const w = Math.floor(t);
+          last = w > last ? w : last;
+          return last;
+        }
+        const q = Math.floor(t * 10) / 10;
+        last = q > last ? q : last;
+        return last + skew(last);
       };
     })(),
-    timing: {},
-    navigation: { type: 0 },
-    // Chrome-only, and present on every real Chrome.
+    // PerformanceTiming was an empty object, so every field a page reads off it
+    // was undefined - and `Math.round(undefined)` is NaN, which serialises to
+    // null. Chrome carries 21 epoch-millisecond fields; the ones for events that
+    // have not happened yet read 0, as they do in a browser.
+    timing: (function () {
+      let dcl = 0;
+      let load = 0;
+      const stamp = () => {
+        try {
+          const rs = globalThis.document && globalThis.document.readyState;
+          const now = globalThis.performance.now();
+          if (!dcl && (rs === 'interactive' || rs === 'complete')) dcl = now;
+          if (!load && rs === 'complete') load = now;
+        } catch (e) {}
+      };
+      const origin = () => Math.round(globalThis.performance.timeOrigin);
+      const t = {};
+      const def = (k, get) =>
+        Object.defineProperty(t, k, { get, enumerable: true, configurable: true });
+      const FIXED = {
+        fetchStart: 2,
+        domainLookupStart: 2,
+        domainLookupEnd: 2,
+        connectStart: 2,
+        connectEnd: 2,
+        requestStart: 4,
+        responseStart: 5,
+        responseEnd: 6,
+        domLoading: 14,
+      };
+      def('navigationStart', origin);
+      for (const k of [
+        'unloadEventStart',
+        'unloadEventEnd',
+        'redirectStart',
+        'redirectEnd',
+        'secureConnectionStart',
+      ]) {
+        def(k, () => 0);
+      }
+      for (const k of Object.keys(FIXED)) def(k, () => origin() + FIXED[k]);
+      for (const k of [
+        'domInteractive',
+        'domContentLoadedEventStart',
+        'domContentLoadedEventEnd',
+      ]) {
+        def(k, () => {
+          stamp();
+          return dcl ? origin() + Math.round(dcl) : 0;
+        });
+      }
+      for (const k of ['domComplete', 'loadEventStart', 'loadEventEnd']) {
+        def(k, () => {
+          stamp();
+          return load ? origin() + Math.round(load) : 0;
+        });
+      }
+      t.toJSON = function toJSON() {
+        const out = {};
+        for (const k of Object.keys(t)) if (k !== 'toJSON') out[k] = t[k];
+        return out;
+      };
+      return t;
+    })(),
+    navigation: { type: 0, redirectCount: 0 },
     memory: (function () {
       const M =
         (globalThis.__PROFILE && globalThis.__PROFILE.misc && globalThis.__PROFILE.misc.memory) ||
@@ -176,13 +318,84 @@
     getEntriesByName: () => [],
     mark() {},
     measure() {},
+    eventCounts: (function () {
+      const NAMES = [
+        'pointerdown',
+        'touchend',
+        'input',
+        'keydown',
+        'mouseleave',
+        'mouseenter',
+        'drop',
+        'beforeinput',
+        'pointerenter',
+        'dragend',
+        'pointercancel',
+        'compositionupdate',
+        'mousedown',
+        'dragleave',
+        'dragover',
+        'mouseup',
+        'pointerover',
+        'lostpointercapture',
+        'mouseover',
+        'gotpointercapture',
+        'dblclick',
+        'keyup',
+        'keypress',
+        'pointerup',
+        'compositionstart',
+        'auxclick',
+        'dragstart',
+        'touchstart',
+        'compositionend',
+        'pointerout',
+        'dragenter',
+        'touchcancel',
+        'click',
+        'contextmenu',
+        'mouseout',
+        'pointerleave',
+      ];
+      const counts = new Map();
+      for (const n of NAMES) counts.set(n, 0);
+      const ec = {
+        get size() {
+          return counts.size;
+        },
+        get(type) {
+          return counts.get(String(type));
+        },
+        has(type) {
+          return counts.has(String(type));
+        },
+        keys() {
+          return counts.keys();
+        },
+        values() {
+          return counts.values();
+        },
+        entries() {
+          return counts.entries();
+        },
+        forEach(cb, thisArg) {
+          counts.forEach((v, k) => cb.call(thisArg, v, k, ec));
+        },
+      };
+      ec[Symbol.iterator] = () => counts.entries();
+      return ec;
+    })(),
+    interactionCount: 0,
   };
+
+  globalThis.__TIME_COST = 0;
 
   globalThis.document = __watch('document', __DOCUMENT);
   globalThis.location = __watch('location', location);
   // The raw objects, so later stages can restructure them.
   globalThis.__RAW_NAVIGATOR = navigator;
   globalThis.__RAW_SCREEN = screen;
+  globalThis.__RAW_PERFORMANCE = performance;
   globalThis.navigator = __watch('navigator', navigator);
   globalThis.screen = __watch('screen', screen);
   globalThis.history = __watch('history', history);
@@ -394,7 +607,19 @@
     this.status = 0;
     this.responseText = '';
     this.response = '';
-    this.responseType = '';
+    this.__responseType = '';
+    Object.defineProperty(this, 'responseType', {
+      get() {
+        return self.__responseType;
+      },
+      set(v) {
+        // An unknown value is ignored rather than stored.
+        const ok = ['', 'arraybuffer', 'blob', 'document', 'json', 'text'];
+        if (ok.indexOf(String(v)) >= 0) self.__responseType = String(v);
+      },
+      enumerable: true,
+      configurable: true,
+    });
     this.withCredentials = false;
     this.timeout = 0;
     this.onreadystatechange = null;
@@ -403,11 +628,24 @@
     this.ontimeout = null;
     this.__listeners = {};
     this.open = function (m, u) {
+      if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(m))) {
+        throw new (globalThis.DOMException || Error)(
+          "Failed to execute 'open' on 'XMLHttpRequest': '" + m + "' is not a valid HTTP method.",
+          'SyntaxError',
+        );
+      }
       self.__m = m;
       self.__u = u;
+      self.__opened = true;
       self.readyState = 1;
     };
     this.setRequestHeader = function (k, v) {
+      if (!self.__opened) {
+        throw new (globalThis.DOMException || Error)(
+          "Failed to execute 'setRequestHeader' on 'XMLHttpRequest': The object's state must be OPENED.",
+          'InvalidStateError',
+        );
+      }
       (self.__h = self.__h || {})[k] = v;
     };
     this.addEventListener = function (t, f) {
@@ -450,6 +688,12 @@
     };
 
     this.send = function (b) {
+      if (!self.__opened) {
+        throw new (globalThis.DOMException || Error)(
+          "Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.",
+          'InvalidStateError',
+        );
+      }
       const body = b === undefined || b === null ? null : __encodeBody(b);
       __NET.push({ kind: 'xhr', method: self.__m, url: self.__u, headers: self.__h || {}, body });
       if (typeof __HOST_FETCH === 'function') {
@@ -786,6 +1030,22 @@
           };
         });
 
+    const visibility = () => {
+      const e = {
+        name: globalThis.document && document.visibilityState === 'hidden' ? 'hidden' : 'visible',
+        entryType: 'visibility-state',
+        startTime: 0,
+        duration: 0,
+        toJSON() {
+          return { name: this.name, entryType: this.entryType, startTime: 0, duration: 0 };
+        },
+      };
+      try {
+        const C = globalThis.VisibilityStateEntry || globalThis.PerformanceEntry;
+        if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(e, C.prototype);
+      } catch (err) {}
+      return [e];
+    };
     globalThis.performance.getEntriesByType = (t) => {
       if (t === 'navigation') {
         const n = build();
@@ -793,11 +1053,12 @@
       }
       if (t === 'paint') return paint();
       if (t === 'resource') return resources();
+      if (t === 'visibility-state') return visibility();
       return [];
     };
     globalThis.performance.getEntries = () => {
       const n = build();
-      return (n ? [n] : []).concat(paint()).concat(resources());
+      return (n ? [n] : []).concat(paint()).concat(resources()).concat(visibility());
     };
     globalThis.performance.getEntriesByName = (name, t) =>
       globalThis.performance
@@ -821,26 +1082,100 @@
   'mark', 'measure', 'navigation', 'paint', 'resource', 'visibility-state'
 ];
 
+  const soon = (fn) => {
+    try {
+      setTimeout(fn, 0);
+    } catch (e) {}
+  };
   globalThis.MutationObserver = function MutationObserver(cb) {
     this._cb = cb;
-    this.observe = function () {};
-    this.disconnect = function () {};
+    this._records = [];
+    const self = this;
+    this.observe = function (target, options) {
+      const list = globalThis.__MUTATION_OBSERVERS || (globalThis.__MUTATION_OBSERVERS = []);
+      list.push({ observer: self, target, options: options || {}, cb });
+    };
+    this.disconnect = function () {
+      const list = globalThis.__MUTATION_OBSERVERS || [];
+      for (let i = list.length - 1; i >= 0; i--) if (list[i].observer === self) list.splice(i, 1);
+    };
     this.takeRecords = function () {
-      return [];
+      const r = self._records;
+      self._records = [];
+      return r;
     };
   };
-  globalThis.IntersectionObserver = function IntersectionObserver(cb) {
+  const boxOf = (el) => {
+    try {
+      return el.getBoundingClientRect();
+    } catch (e) {
+      return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+    }
+  };
+  globalThis.IntersectionObserver = function IntersectionObserver(cb, opts) {
     this._cb = cb;
-    this.observe = function () {};
+    this.root = (opts && opts.root) || null;
+    this.rootMargin = (opts && opts.rootMargin) || '0px 0px 0px 0px';
+    this.thresholds = (
+      opts && opts.threshold !== undefined ? [].concat(opts.threshold) : [0]
+    ).slice();
+    const self = this;
+    this._entries = [];
+    this.observe = function (target) {
+      const box = boxOf(target);
+      const on = globalThis.__isConnected ? globalThis.__isConnected(target) : true;
+      const entry = {
+        target,
+        isIntersecting: on,
+        intersectionRatio: on ? 1 : 0,
+        boundingClientRect: box,
+        intersectionRect: on ? box : { x: 0, y: 0, width: 0, height: 0 },
+        rootBounds: {
+          x: 0,
+          y: 0,
+          width: globalThis.innerWidth,
+          height: globalThis.innerHeight,
+          top: 0,
+          left: 0,
+          right: globalThis.innerWidth,
+          bottom: globalThis.innerHeight,
+        },
+        time: globalThis.performance ? performance.now() : 0,
+      };
+      self._entries.push(entry);
+      soon(() => {
+        try {
+          cb.call(self, [entry], self);
+        } catch (e) {}
+      });
+    };
     this.unobserve = function () {};
     this.disconnect = function () {};
     this.takeRecords = function () {
-      return [];
+      const r = self._entries;
+      self._entries = [];
+      return r;
     };
   };
   globalThis.ResizeObserver = function ResizeObserver(cb) {
     this._cb = cb;
-    this.observe = function () {};
+    const self = this;
+    this.observe = function (target) {
+      const box = boxOf(target);
+      const size = [{ inlineSize: box.width, blockSize: box.height }];
+      const entry = {
+        target,
+        contentRect: box,
+        borderBoxSize: size,
+        contentBoxSize: size,
+        devicePixelContentBoxSize: size,
+      };
+      soon(() => {
+        try {
+          cb.call(self, [entry], self);
+        } catch (e) {}
+      });
+    };
     this.unobserve = function () {};
     this.disconnect = function () {};
   };

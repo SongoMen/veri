@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "veri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "serde",
@@ -1284,11 +1284,11 @@ dependencies = [
 
 [[package]]
 name = "veri-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "veri-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "veri-integrations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veri-core",
  "veri-testkit",
@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "veri-js"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1319,14 +1319,14 @@ dependencies = [
 
 [[package]]
 name = "veri-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "veri-core",
 ]
 
 [[package]]
 name = "veri-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tokio",
  "veri",

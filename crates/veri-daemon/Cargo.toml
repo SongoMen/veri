@@ -11,9 +11,9 @@ keywords = ["http-client", "browser", "stdio", "json"]
 categories = ["web-programming::http-client"]
 
 [dependencies]
-veri = { path = "../veri", version = "0.1.0" }
-veri-integrations = { path = "../veri-integrations", version = "0.1.0" }
-veri-js = { path = "../veri-js", version = "0.1.0" }
+veri = { path = "../veri", version = "0.2.0" }
+veri-integrations = { path = "../veri-integrations", version = "0.2.0" }
+veri-js = { path = "../veri-js", version = "0.2.0" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }

@@ -75,14 +75,48 @@ await veri.head(url, options);
 await veri.request({ method, url, ...options });
 ```
 
-`options` takes `headers`, `query`, `json`, `body`, and `timeoutMs` to override
-the client's timeout for this request alone. `json` sets the content type and
-serialises for you; `body` is sent as-is.
+`options` takes `headers`, `query`, `body`, and `timeoutMs` to override the
+client's timeout for this request alone.
+
+`body` takes whatever you have:
+
+| you pass                        | sent as               | content type       |
+| ------------------------------- | --------------------- | ------------------ |
+| string                          | those bytes, verbatim | none added         |
+| Buffer, TypedArray, ArrayBuffer | those bytes           | none added         |
+| anything else                   | JSON                  | `application/json` |
+
+A content type you set yourself always wins, so a JSON-shaped media type keeps
+its name.
 
 ```js
 await veri.post('https://example.com/api/quote', {
   headers: { 'x-api-key': '…' },
-  json: { symbol: 'AAPL' },
+  body: { symbol: 'AAPL' }, // serialised, application/json
+});
+
+await veri.post('https://example.com/token', {
+  headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  body: 'grant_type=client_credentials', // sent as typed
+});
+
+await veri.put('https://example.com/upload', {
+  headers: { 'content-type': 'image/png' },
+  body: await fs.promises.readFile('logo.png'), // bytes, unaltered
+});
+```
+
+Streams are the one thing it refuses: the daemon needs the whole request up
+front, and draining a stream here would buffer an upload of unknown size without
+you asking. Collect it first.
+
+For a JSON document whose top level is a string or a number, send it as text and
+say so, since a bare string is taken at its word:
+
+```js
+await veri.post(url, {
+  headers: { 'content-type': 'application/json' },
+  body: '"hello"',
 });
 ```
 
@@ -117,12 +151,12 @@ page routinely arrives with a `200`, so `isSuccess` alone will fool you.
 
 A failure rejects with a `VeriError` carrying flags that say what to do next:
 
-| flag                     | meaning                                                                           |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| `sawChallenge`           | A protection served a challenge. A solver is the thing that would help.           |
-| `clearedButRechallenged` | The challenge _was_ solved and clearance issued, and this path challenged anyway. |
-| `timedOut`               | A timeout was involved. Back off rather than treating it as a refusal.            |
-| `unreachable`            | No identity reached the host at all.                                              |
+| flag                     | meaning                                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `sawChallenge`           | A protection served a challenge. A solver is the thing that would help.                                |
+| `clearedButRechallenged` | The challenge _was_ solved and clearance issued, and this path challenged anyway.                      |
+| `timedOut`               | A timeout was involved. Back off rather than treating it as a refusal.                                 |
+| `unreachable`            | No identity reached the host at all.                                                                   |
 | `response`               | The last response the ladder saw, as a `VeriResponse`. `status` and `body` are shorthands for its own. |
 
 `clearedButRechallenged`: the solve worked and the clearance is real, so a different **identity** is the thing most likely to help.

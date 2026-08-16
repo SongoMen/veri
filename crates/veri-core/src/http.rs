@@ -16,6 +16,39 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
+pub fn unbase64(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    };
+    let body = s.trim_end_matches('=');
+    if !s.len().is_multiple_of(4) || s.len() - body.len() > 2 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() / 4 * 3);
+    for chunk in body.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= val(c)? << (18 - 6 * i);
+        }
+        let bytes = n.to_be_bytes();
+        out.push(bytes[1]);
+        if chunk.len() > 2 {
+            out.push(bytes[2]);
+        }
+        if chunk.len() > 3 {
+            out.push(bytes[3]);
+        }
+    }
+    Some(out)
+}
+
 /// Percent-encode everything outside the unreserved set.
 pub fn percent_encode(s: &str) -> String {
     s.bytes()

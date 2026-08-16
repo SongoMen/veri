@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const readline = require('node:readline');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const DAEMON_DEADLINE_MS = 300000;
 
 const EXE = process.platform === 'win32' ? 'veri-daemon.exe' : 'veri-daemon';
@@ -51,6 +51,31 @@ function pairs(obj) {
     }
   }
   return out;
+}
+
+function requestBody(opts) {
+  const value = opts.body;
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'string') return { body: value };
+
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) {
+    return { bodyBase64: value.toString('base64') };
+  }
+  if (ArrayBuffer.isView(value)) {
+    return {
+      bodyBase64: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64'),
+    };
+  }
+  if (value instanceof ArrayBuffer) {
+    return { bodyBase64: Buffer.from(value).toString('base64') };
+  }
+  if (typeof value.pipe === 'function' || typeof value[Symbol.asyncIterator] === 'function') {
+    throw new VeriError(
+      'a streaming body cannot be sent: the daemon needs the whole request up front. ' +
+        'Collect it first, e.g. await buffer(stream).',
+    );
+  }
+  return { json: value };
 }
 
 class VeriResponse {
@@ -307,8 +332,7 @@ class Veri {
       url: opts.url,
       headers: pairs(opts.headers),
       query: pairs(opts.query),
-      json: opts.json,
-      body: opts.body,
+      ...requestBody(opts),
       requestTimeoutMs: opts.timeoutMs,
     });
     return new VeriResponse(raw);

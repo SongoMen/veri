@@ -1,4 +1,7 @@
 (function () {
+  const __defineOwn = (o, k, v) =>
+    Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+
   const __M = (globalThis.__PROFILE && globalThis.__PROFILE.misc) || {};
 
   const __FONTS = __M.fonts || { advances: {}, heights: {}, present: [], first: 32, refSize: 16 };
@@ -17,15 +20,60 @@
     return i === undefined ? null : g.tables[i];
   }
 
+  const __INK = (__FONTS && __FONTS.ink) || null;
+
+  const __GENERIC = {
+    serif: 'Times',
+    'sans-serif': 'Helvetica',
+    monospace: 'Menlo',
+    cursive: 'Apple Chancery',
+    fantasy: 'Papyrus',
+    'system-ui': 'Helvetica',
+    '-apple-system': 'Helvetica',
+    'ui-monospace': 'Menlo',
+    'ui-serif': 'Times',
+    'ui-sans-serif': 'Helvetica',
+  };
   function __pickFamily(families) {
     const index = (__FONTS.advances && __FONTS.advances.index) || {};
     const fallback = index.__default__;
+    const inkIndex = (__INK && __INK.index) || {};
+    const inkFallback = inkIndex.__default__;
+    const usable = (f) => {
+      if (!Object.prototype.hasOwnProperty.call(index, f)) return false;
+      if (index[f] !== fallback) return true;
+      return inkIndex[f] !== undefined && inkIndex[f] !== inkFallback;
+    };
     for (const f of families) {
-      if (!Object.prototype.hasOwnProperty.call(index, f)) continue;
-      if (index[f] === fallback) continue;
-      return f;
+      if (usable(f)) return f;
+      const g = __GENERIC[String(f).toLowerCase()];
+      if (g && usable(g)) return g;
     }
     return '__default__';
+  }
+
+  function __inkTable(fam) {
+    if (!__INK) return null;
+    const i = __INK.index[fam];
+    return i === undefined ? null : __INK.tables[i];
+  }
+  function __inkBox(text, fam, size) {
+    const t = __inkTable(fam) || __inkTable('__default__');
+    const s = String(text);
+    if (!t || !s) return null;
+    const scale = (size || 10) / (__INK.refSize || 100);
+    let a = 0;
+    let d = 0;
+    let saw = false;
+    for (let i = 0; i < s.length; i++) {
+      const idx = s.charCodeAt(i) - 32;
+      if (idx < 0 || idx >= t[0].length) continue;
+      saw = true;
+      if (t[0][idx] > a) a = t[0][idx];
+      if (t[1][idx] > d) d = t[1][idx];
+    }
+    if (!saw) return null;
+    return { a: Math.round(a * scale * 1000) / 1000, d: Math.round(d * scale * 1000) / 1000 };
   }
 
   globalThis.__measure = function __measure(text, font) {
@@ -76,10 +124,267 @@
       lineHeight,
       ascent: h.a * scale,
       descent: h.d * scale,
+      ink: __inkBox(s, fam, size),
     };
   };
 
-  // Records what was drawn, so the render depends on it.
+  globalThis.__setUniform = function __setUniform(gl, loc, values) {
+    if (!gl || !loc || !loc.__name) return;
+    (gl.__uniforms || (gl.__uniforms = {}))[loc.__name] = values;
+  };
+
+  function __glslLive(src) {
+    const s = String(src)
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\/\/[^\n]*/g, ' ');
+    const ids = (t) => String(t).match(/[A-Za-z_]\w*/g) || [];
+    const outs = Object.create(null);
+    for (const n of ['gl_Position', 'gl_FragColor', 'gl_FragDepth', 'gl_FragData']) outs[n] = 1;
+    const declOut =
+      /\b(?:out|varying)\s+(?:(?:lowp|mediump|highp)\s+)?[A-Za-z_]\w*\s+([A-Za-z_]\w*)/g;
+    let m;
+    while ((m = declOut.exec(s))) outs[m[1]] = 1;
+
+    const bodies = Object.create(null);
+    const fnRe = /\b([A-Za-z_]\w*)\s*\([^()]*\)\s*\{/g;
+    while ((m = fnRe.exec(s))) {
+      let depth = 1;
+      let i = fnRe.lastIndex;
+      while (i < s.length && depth > 0) {
+        const c = s[i++];
+        if (c === '{') depth++;
+        else if (c === '}') depth--;
+      }
+      bodies[m[1]] = s.slice(fnRe.lastIndex, i - 1);
+    }
+
+    const deps = Object.create(null);
+    const live = Object.create(null);
+    const addAll = (t) => {
+      for (const x of ids(t)) live[x] = 1;
+    };
+    for (const raw of s.split(';')) {
+      const st = raw.trim();
+      if (!st) continue;
+      const cf = /\b(?:if|for|while|switch)\s*\(([\s\S]*)$/.exec(st);
+      if (cf) addAll(cf[1]);
+      const eq = st.search(/[^=!<>+\-*/%]=[^=]/);
+      if (eq < 0) continue;
+      const lhsIds = ids(st.slice(0, eq + 1));
+      const lhs = lhsIds[lhsIds.length - 1];
+      if (!lhs) continue;
+      const rhs = ids(st.slice(eq + 2));
+      if (outs[lhs]) addAll(rhs.join(' '));
+      else (deps[lhs] || (deps[lhs] = [])).push.apply(deps[lhs], rhs);
+    }
+
+    const expanded = Object.create(null);
+    for (let pass = 0; pass < 32; pass++) {
+      let grew = false;
+      for (const k of Object.keys(live)) {
+        const d = deps[k];
+        if (d) {
+          for (const x of d) {
+            if (!live[x]) {
+              live[x] = 1;
+              grew = true;
+            }
+          }
+        }
+        if (bodies[k] && !expanded[k]) {
+          expanded[k] = 1;
+          addAll(bodies[k]);
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+    return live;
+  }
+
+  globalThis.__uniformActive = function __uniformActive(pr, name) {
+    if (!pr || !pr.__shaders || !pr.__shaders.length) return true;
+    let live = pr.__live;
+    if (!live) {
+      let src = '';
+      for (const sh of pr.__shaders) src += ((sh && sh.__src) || '') + '\n';
+      if (!/\bmain\s*\(/.test(src)) return true;
+      live = pr.__live = __glslLive(src);
+    }
+    return live[name] === 1;
+  };
+
+  const F = Math.fround;
+  function __glsl(src, uniforms) {
+    const vars = Object.create(null);
+    for (const k of Object.keys(uniforms || {})) {
+      const v = uniforms[k];
+      vars[k] = Array.isArray(v) ? v.map(F) : F(v);
+    }
+    const FN = {
+      floor: (a) => F(Math.floor(a)),
+      ceil: (a) => F(Math.ceil(a)),
+      abs: (a) => F(Math.abs(a)),
+      sqrt: (a) => F(Math.sqrt(a)),
+      sign: (a) => F(Math.sign(a)),
+      fract: (a) => F(a - Math.floor(a)),
+      exp: (a) => F(Math.exp(a)),
+      log: (a) => F(Math.log(a)),
+      sin: (a) => F(Math.sin(a)),
+      cos: (a) => F(Math.cos(a)),
+      tan: (a) => F(Math.tan(a)),
+      max: (a, b) => F(Math.max(a, b)),
+      min: (a, b) => F(Math.min(a, b)),
+      pow: (a, b) => F(Math.pow(a, b)),
+      mod: (a, b) => F(a - b * Math.floor(a / b)),
+      step: (a, b) => (b < a ? 0 : 1),
+      clamp: (a, b, c) => F(Math.min(Math.max(a, b), c)),
+      mix: (a, b, t) => F(a * (1 - t) + b * t),
+    };
+    // Tokeniser and a precedence-climbing parser over the float subset.
+    const evalExpr = (text) => {
+      const toks = String(text).match(/[A-Za-z_]\w*|\d*\.\d+|\d+\.?|[()+\-*/,]/g) || [];
+      let i = 0;
+      const peek = () => toks[i];
+      const primary = () => {
+        let t = toks[i++];
+        if (t === '(') {
+          const v = expr(0);
+          i++;
+          return v;
+        }
+        if (t === '-') return F(-primary());
+        if (t === '+') return primary();
+        if (/^[A-Za-z_]/.test(t)) {
+          if (peek() === '(') {
+            i++;
+            const args = [];
+            if (peek() !== ')') {
+              for (;;) {
+                args.push(expr(0));
+                if (peek() === ',') {
+                  i++;
+                  continue;
+                }
+                break;
+              }
+            }
+            i++;
+            const f = FN[t];
+            return f ? F(f.apply(null, args)) : 0;
+          }
+          const v = vars[t];
+          return v === undefined ? 0 : Array.isArray(v) ? v[0] : v;
+        }
+        return F(parseFloat(t));
+      };
+      const expr = (min) => {
+        let left = primary();
+        for (;;) {
+          const op = peek();
+          const prec = op === '+' || op === '-' ? 1 : op === '*' || op === '/' ? 2 : -1;
+          if (prec < min || prec < 0) return left;
+          i++;
+          const right = expr(prec + 1);
+          left =
+            op === '+'
+              ? F(left + right)
+              : op === '-'
+                ? F(left - right)
+                : op === '*'
+                  ? F(left * right)
+                  : F(left / right);
+        }
+      };
+      return expr(0);
+    };
+    const body = String(src).replace(/\s+/g, ' ');
+    for (const m of body.matchAll(/\b(?:float|int)\s+([A-Za-z_]\w*)\s*=\s*([^;]+);/g)) {
+      try {
+        vars[m[1]] = evalExpr(m[2]);
+      } catch (e) {
+        vars[m[1]] = 0;
+      }
+    }
+    const out = /gl_FragColor\s*=\s*vec4\s*\(([^;]+)\)\s*;/.exec(body);
+    if (!out) return null;
+    const parts = [];
+    let depth = 0;
+    let buf = '';
+    for (const ch of out[1]) {
+      if (ch === '(') depth++;
+      if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) {
+        parts.push(buf);
+        buf = '';
+        continue;
+      }
+      buf += ch;
+    }
+    parts.push(buf);
+    return parts.slice(0, 4).map((p) => {
+      try {
+        return evalExpr(p);
+      } catch (e) {
+        return 0;
+      }
+    });
+  }
+
+  globalThis.__shadePixels = function __shadePixels(gl, w, h, out) {
+    if (!out || !out.length) return;
+    let rgba = null;
+    try {
+      const pr = gl && gl.__program;
+      const frag =
+        pr &&
+        (pr.__shaders || []).map((sh) => sh && sh.__src).find((x) => /gl_FragColor/.test(x || ''));
+      if (frag) rgba = __glsl(frag, gl.__uniforms || {});
+    } catch (e) {}
+    if (!rgba) return;
+    const px = rgba.map((v) => Math.max(0, Math.min(255, Math.round(v * 255))));
+    for (let i = 0; i + 3 < out.length; i += 4) {
+      out[i] = px[0];
+      out[i + 1] = px[1];
+      out[i + 2] = px[2];
+      out[i + 3] = px[3] === undefined ? 255 : px[3];
+    }
+  };
+
+  // prettier-ignore
+  const __NAMED = { black:'#000000', white:'#ffffff', red:'#ff0000', green:'#008000', blue:'#0000ff',
+    yellow:'#ffff00', orange:'#ffa500', purple:'#800080', gray:'#808080', grey:'#808080',
+    silver:'#c0c0c0', maroon:'#800000', olive:'#808000', lime:'#00ff00', aqua:'#00ffff',
+    cyan:'#00ffff', teal:'#008080', navy:'#000080', fuchsia:'#ff00ff', magenta:'#ff00ff',
+    transparent:'rgba(0, 0, 0, 0)' };
+  function __cssColor(v) {
+    const t = String(v).trim();
+    const lower = t.toLowerCase();
+    if (__NAMED[lower]) return __NAMED[lower];
+    let m = /^#([0-9a-f]{3})$/i.exec(t);
+    if (m)
+      return (
+        '#' +
+        m[1]
+          .toLowerCase()
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      );
+    m = /^#([0-9a-f]{6})$/i.exec(t);
+    if (m) return '#' + m[1].toLowerCase();
+    // An opaque colour reads back as hex however it was written.
+    const hex2 = (n) => ('0' + (n | 0).toString(16)).slice(-2);
+    m = /^rgb\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/i.exec(t);
+    if (m) return '#' + hex2(m[1]) + hex2(m[2]) + hex2(m[3]);
+    m = /^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/i.exec(t);
+    if (m)
+      return (
+        'rgba(' + (m[1] | 0) + ', ' + (m[2] | 0) + ', ' + (m[3] | 0) + ', ' + parseFloat(m[4]) + ')'
+      );
+    return t;
+  }
+
   globalThis.__draw = function __draw(canvas, op) {
     try {
       const parts = [op];
@@ -273,6 +578,52 @@
     return 'data:image/png;base64,' + btoa(bin);
   };
 
+  // Parses "#abc", "#aabbcc", "rgb(a,b,c)" and "rgba(a,b,c,d)". Anything else is
+  // opaque black, which is what an unset fillStyle already is.
+  function __color(css) {
+    const s = String(css || '#000').trim();
+    let m = /^#([0-9a-f]{3,8})$/i.exec(s);
+    if (m) {
+      const x = m[1];
+      const p = (i, n) => parseInt(x.length <= 4 ? x[i].repeat(2) : x.substr(i * 2, 2), 16);
+      return [p(0), p(1), p(2), x.length === 4 || x.length === 8 ? p(3) / 255 : 1];
+    }
+    m = /^rgba?\(([^)]+)\)$/i.exec(s);
+    if (m) {
+      const v = m[1].split(',').map((t) => parseFloat(t));
+      return [v[0] | 0, v[1] | 0, v[2] | 0, v.length > 3 ? v[3] : 1];
+    }
+    return [0, 0, 0, 1];
+  }
+
+  // Source-over with per-pixel coverage, which is what makes a fractional
+  // fillRect read back as a partly covered pixel rather than a solid one.
+  function __blend(d, W, H, x0, y0, x1, y1, col) {
+    const [r, g, b, a] = col;
+    const px0 = Math.max(0, Math.floor(Math.min(x0, x1)));
+    const px1 = Math.min(W, Math.ceil(Math.max(x0, x1)));
+    const py0 = Math.max(0, Math.floor(Math.min(y0, y1)));
+    const py1 = Math.min(H, Math.ceil(Math.max(y0, y1)));
+    for (let y = py0; y < py1; y++) {
+      const cy = Math.max(0, Math.min(y + 1, Math.max(y0, y1)) - Math.max(y, Math.min(y0, y1)));
+      if (cy <= 0) continue;
+      for (let x = px0; x < px1; x++) {
+        const cx = Math.max(0, Math.min(x + 1, Math.max(x0, x1)) - Math.max(x, Math.min(x0, x1)));
+        if (cx <= 0) continue;
+        const sa = a * cx * cy;
+        if (sa <= 0) continue;
+        const o = (y * W + x) * 4;
+        const da = d[o + 3] / 255;
+        const oa = sa + da * (1 - sa);
+        if (oa <= 0) continue;
+        d[o] = (r * sa + d[o] * da * (1 - sa)) / oa;
+        d[o + 1] = (g * sa + d[o + 1] * da * (1 - sa)) / oa;
+        d[o + 2] = (b * sa + d[o + 2] * da * (1 - sa)) / oa;
+        d[o + 3] = oa * 255;
+      }
+    }
+  }
+
   globalThis.__canvasPixels = function __canvasPixels(canvas, w, h) {
     const W = Math.max(1, w | 0),
       H = Math.max(1, h | 0);
@@ -282,27 +633,64 @@
     // what compresses to the couple of kilobytes a blank canvas should encode to.
     if (!ops) return d;
 
-    // Drawn: a flat ground with a band over it, both derived from the operations.
-    // Real renders are mostly flat; per-pixel noise defeats PNG compression and
-    // produced data URLs a hundred times larger than any browser's.
-    const seed = __opHash(ops + '|' + W + 'x' + H);
-    const r = 200 + (seed & 55),
-      g = 200 + ((seed >>> 8) & 55),
-      b = 200 + ((seed >>> 16) & 55);
-    const bandTop = Math.floor(H / 3),
-      bandBottom = Math.floor((H * 2) / 3);
-    for (let y = 0; y < H; y++) {
-      const inBand = y >= bandTop && y < bandBottom;
-      const rr = inBand ? (r ^ 0x2b) & 255 : r;
-      const gg = inBand ? (g ^ 0x17) & 255 : g;
-      const bb = inBand ? (b ^ 0x3d) & 255 : b;
-      let o = y * W * 4;
-      for (let x = 0; x < W; x++) {
-        d[o] = rr;
-        d[o + 1] = gg;
-        d[o + 2] = bb;
-        d[o + 3] = 255;
-        o += 4;
+    for (const raw of ops.split(';')) {
+      if (!raw) continue;
+      const p = raw.split(',');
+      const op = p[0];
+      const n = (i) => parseFloat(p[i]) || 0;
+      if (op === 'fr' || op === 'sr') {
+        const x = n(1),
+          y = n(2),
+          rw = n(3),
+          rh = n(4);
+        const col = __color(p[5]);
+        if (op === 'fr') {
+          __blend(d, W, H, x, y, x + rw, y + rh, col);
+        } else {
+          __blend(d, W, H, x, y, x + rw, y + 1, col);
+          __blend(d, W, H, x, y + rh - 1, x + rw, y + rh, col);
+          __blend(d, W, H, x, y, x + 1, y + rh, col);
+          __blend(d, W, H, x + rw - 1, y, x + rw, y + rh, col);
+        }
+      } else if (op === 'cr') {
+        const x = n(1),
+          y = n(2),
+          rw = n(3),
+          rh = n(4);
+        for (let yy = Math.max(0, y | 0); yy < Math.min(H, Math.ceil(y + rh)); yy++) {
+          for (let xx = Math.max(0, x | 0); xx < Math.min(W, Math.ceil(x + rw)); xx++) {
+            const o = (yy * W + xx) * 4;
+            d[o] = d[o + 1] = d[o + 2] = d[o + 3] = 0;
+          }
+        }
+      } else if (op === 'ft' || op === 'st') {
+        const col = __color(p[p.length - 1]);
+        const font = p[p.length - 2];
+        const ty = parseFloat(p[p.length - 3]) || 0;
+        const tx = parseFloat(p[p.length - 4]) || 0;
+        const text = p.slice(1, p.length - 4).join(',');
+        let m;
+        try {
+          m = globalThis.__measure(text, font);
+        } catch (e) {
+          m = { width: text.length * 8, ascent: 10, descent: 2 };
+        }
+        const asc = m.ascent || 10;
+        let pen = tx;
+        for (let ci = 0; ci < text.length; ci++) {
+          const ch = text[ci];
+          let cw;
+          try {
+            cw = globalThis.__measure(ch, font).width;
+          } catch (e) {
+            cw = (m.width || 8) / Math.max(1, text.length);
+          }
+          if (ch !== ' ' && cw > 0) {
+            const top = ty - asc * 0.72;
+            __blend(d, W, H, pen + cw * 0.08, top, pen + cw * 0.92, ty + asc * 0.06, col);
+          }
+          pen += cw;
+        }
       }
     }
     return d;
@@ -352,24 +740,69 @@
     if (!ctx) return ctx;
     try {
       const tag = __CTX_TAG[type];
-      if (tag) Object.defineProperty(ctx, Symbol.toStringTag, { value: tag, configurable: true });
+      if (tag) {
+        Object.defineProperty(ctx, Symbol.toStringTag, { value: tag, configurable: true });
+        const C = globalThis[tag];
+        if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(ctx, C.prototype);
+      }
       if (globalThis.__markNative) __markNative(ctx);
     } catch (e) {}
     return ctx;
   }
 
   globalThis.__makeContext = makeContext;
-  function makeContext(canvas, type) {
-    return tagContext(makeContextInner(canvas, type), type);
+  const __CTX_DEFAULTS = {
+    webgl: {
+      alpha: true,
+      antialias: true,
+      depth: true,
+      desynchronized: false,
+      failIfMajorPerformanceCaveat: false,
+      powerPreference: 'default',
+      premultipliedAlpha: true,
+      preserveDrawingBuffer: false,
+      stencil: false,
+      xrCompatible: false,
+    },
+    '2d': { alpha: true, desynchronized: false, colorSpace: 'srgb', willReadFrequently: false },
+  };
+
+  function makeContext(canvas, type, attrs) {
+    if (type !== '2d') {
+      globalThis.__TIME_COST = (globalThis.__TIME_COST || 0) + 2.3;
+    }
+    const ctx = tagContext(makeContextInner(canvas, type), type);
+    try {
+      const base = type === '2d' ? __CTX_DEFAULTS['2d'] : __CTX_DEFAULTS.webgl;
+      const got = {};
+      for (const k of Object.keys(base)) {
+        const want = attrs && typeof attrs === 'object' ? attrs[k] : undefined;
+        if (want === undefined) got[k] = base[k];
+        else got[k] = typeof base[k] === 'boolean' ? !!want : String(want);
+      }
+      if (ctx && typeof ctx === 'object') ctx.__attrs = got;
+    } catch (e) {}
+    return ctx;
   }
 
   function makeContextInner(canvas, type) {
     if (type === '2d') {
       return {
         canvas,
-        fillStyle: '#000',
-        strokeStyle: '#000',
-        font: '10px sans-serif',
+        __fill: '#000000',
+        __stroke: '#000000',
+        get fillStyle() {
+          return this.__fill;
+        },
+        set fillStyle(v) {
+          this.__fill = __cssColor(v);
+        },
+        get strokeStyle() {
+          return this.__stroke;
+        },
+        set strokeStyle(v) {
+          this.__stroke = __cssColor(v);
+        },
         globalAlpha: 1,
         globalCompositeOperation: 'source-over',
         textBaseline: 'alphabetic',
@@ -395,7 +828,7 @@
         stroke() {},
         clip() {},
         fillRect(x, y, w, h) {
-          __draw(canvas, 'fr', x, y, w, h);
+          __draw(canvas, 'fr', x, y, w, h, this.fillStyle);
         },
         strokeRect(x, y, w, h) {
           __draw(canvas, 'sr', x, y, w, h);
@@ -409,14 +842,27 @@
         strokeText(t, x, y) {
           __draw(canvas, 'st', t, x, y, this.font, this.strokeStyle);
         },
+        get font() {
+          return this.__font === undefined ? '10px sans-serif' : this.__font;
+        },
+        set font(v) {
+          // An unparseable value leaves the previous font in place.
+          if (
+            /^\s*(?:[a-z-]+\s+)*?\d*\.?\d+(?:px|pt|em|rem|%|ex|ch|vw|vh|cm|mm|in|pc)\s+\S/i.test(
+              String(v),
+            )
+          ) {
+            this.__font = String(v);
+          }
+        },
         measureText(t) {
           const m = __measure(t, this.font);
           return {
             width: m.width,
             actualBoundingBoxLeft: -0.5,
             actualBoundingBoxRight: m.width - 0.5,
-            actualBoundingBoxAscent: m.ascent * 0.818,
-            actualBoundingBoxDescent: m.descent * 0.0625,
+            actualBoundingBoxAscent: m.ink ? m.ink.a : m.ascent * 0.818,
+            actualBoundingBoxDescent: m.ink ? m.ink.d : m.descent * 0.0625,
             fontBoundingBoxAscent: m.ascent,
             fontBoundingBoxDescent: m.descent,
             emHeightAscent: m.ascent,
@@ -457,12 +903,7 @@
           return false;
         },
         getContextAttributes() {
-          return {
-            alpha: true,
-            desynchronized: false,
-            colorSpace: 'srgb',
-            willReadFrequently: false,
-          };
+          return Object.assign({}, this.__attrs || __CTX_DEFAULTS['2d']);
         },
       };
     }
@@ -606,44 +1047,47 @@
           return { rangeMin: 127, rangeMax: 127, precision: 23 };
         },
         getContextAttributes() {
-          return {
-            alpha: true,
-            antialias: true,
-            depth: true,
-            desynchronized: false,
-            failIfMajorPerformanceCaveat: false,
-            powerPreference: 'default',
-            premultipliedAlpha: true,
-            preserveDrawingBuffer: false,
-            stencil: false,
-            xrCompatible: false,
-          };
+          return Object.assign({}, this.__attrs || __CTX_DEFAULTS.webgl);
         },
         createBuffer() {
           return {};
         },
         bindBuffer() {},
         bufferData() {},
-        createShader() {
-          return {};
+        createShader(kind) {
+          return { __kind: kind, __src: '' };
         },
-        shaderSource() {},
+        shaderSource(sh, src) {
+          if (sh) sh.__src = String(src);
+        },
         compileShader() {},
         createProgram() {
-          return {};
+          return { __shaders: [] };
         },
-        attachShader() {},
+        attachShader(pr, sh) {
+          if (pr && sh) pr.__shaders.push(sh);
+        },
         linkProgram() {},
-        useProgram() {},
+        useProgram(pr) {
+          this.__program = pr;
+        },
         getAttribLocation() {
           return 0;
         },
-        getUniformLocation() {
-          return {};
+        getUniformLocation(pr, name) {
+          if (!__uniformActive(pr, String(name))) return null;
+          const loc = { __name: String(name), __program: pr };
+          try {
+            const C = globalThis.WebGLUniformLocation;
+            if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(loc, C.prototype);
+          } catch (e) {}
+          return loc;
         },
         enableVertexAttribArray() {},
         vertexAttribPointer() {},
-        drawArrays() {},
+        drawArrays() {
+          this.__drawn = true;
+        },
         drawElements() {},
         viewport() {},
         clearColor() {},
@@ -659,7 +1103,53 @@
         getError() {
           return 0;
         },
-        readPixels() {},
+        uniform1f(loc, a) {
+          __setUniform(this, loc, [a]);
+        },
+        uniform2f(loc, a, b) {
+          __setUniform(this, loc, [a, b]);
+        },
+        uniform3f(loc, a, b, c) {
+          __setUniform(this, loc, [a, b, c]);
+        },
+        uniform4f(loc, a, b, c, d) {
+          __setUniform(this, loc, [a, b, c, d]);
+        },
+        uniform1i(loc, a) {
+          __setUniform(this, loc, [a]);
+        },
+        uniform2i(loc, a, b) {
+          __setUniform(this, loc, [a, b]);
+        },
+        uniform1fv(loc, v) {
+          __setUniform(this, loc, Array.prototype.slice.call(v || []));
+        },
+        uniform2fv(loc, v) {
+          __setUniform(this, loc, Array.prototype.slice.call(v || []));
+        },
+        uniform3fv(loc, v) {
+          __setUniform(this, loc, Array.prototype.slice.call(v || []));
+        },
+        uniform4fv(loc, v) {
+          __setUniform(this, loc, Array.prototype.slice.call(v || []));
+        },
+        uniformMatrix2fv() {},
+        uniformMatrix3fv() {},
+        uniformMatrix4fv() {},
+        getShaderInfoLog() {
+          return '';
+        },
+        getProgramInfoLog() {
+          return '';
+        },
+        deleteShader() {},
+        deleteProgram() {},
+        deleteBuffer() {},
+        detachShader() {},
+        validateProgram() {},
+        readPixels(x, y, w, h, fmt, type, out) {
+          __shadePixels(this, w | 0, h | 0, out);
+        },
         activeTexture() {},
         bindTexture() {},
         createTexture() {
@@ -716,13 +1206,21 @@
       globalThis.__PROFILE.navigator &&
       globalThis.__PROFILE.navigator.plugins) ||
     [];
+  function __node(n, ctorName) {
+    try {
+      const C = globalThis[ctorName];
+      if (n && typeof C === 'function' && C.prototype) Object.setPrototypeOf(n, C.prototype);
+    } catch (e) {}
+    return n;
+  }
+
   function AudioContextShim() {
     this.sampleRate = __AUDIO.sampleRate || 48000;
     this.state = __AUDIO.state || 'suspended';
     this.baseLatency =
       __AUDIO.baseLatency !== undefined ? __AUDIO.baseLatency : 0.005333333333333333;
     this.outputLatency = __AUDIO.outputLatency !== undefined ? __AUDIO.outputLatency : 0;
-    this.currentTime = 0;
+    __defineOwn(this, 'currentTime', 0);
     this.destination = makeAudioNode({
       maxChannelCount: __AUDIO.maxChannelCount || 2,
       numberOfInputs: __AUDIO.numberOfInputs !== undefined ? __AUDIO.numberOfInputs : 1,
@@ -730,19 +1228,22 @@
       channelCount: __AUDIO.channelCount || 2,
     });
     this.listener = {};
-    this.createOscillator = () => makeAudioNode({});
-    this.createGain = () => makeAudioNode({});
+    this.createOscillator = () => __node(makeAudioNode({ type: 'sine' }), 'OscillatorNode');
+    this.createGain = () => __node(makeAudioNode({}), 'GainNode');
     this.createAnalyser = () =>
-      makeAudioNode({
-        fftSize: 2048,
-        frequencyBinCount: 1024,
-        getFloatFrequencyData(a) {
-          for (let i = 0; i < a.length; i++) a[i] = -100 - (i % 30);
-        },
-        getByteFrequencyData(a) {
-          for (let i = 0; i < a.length; i++) a[i] = 128 - (i % 30);
-        },
-      });
+      __node(
+        makeAudioNode({
+          fftSize: 2048,
+          frequencyBinCount: 1024,
+          getFloatFrequencyData(a) {
+            for (let i = 0; i < a.length; i++) a[i] = -100 - (i % 30);
+          },
+          getByteFrequencyData(a) {
+            for (let i = 0; i < a.length; i++) a[i] = 128 - (i % 30);
+          },
+        }),
+        'AnalyserNode',
+      );
     this.createDynamicsCompressor = () =>
       makeAudioNode({
         threshold: { value: -24 },
@@ -771,8 +1272,18 @@
     this.close = () => Promise.resolve();
     this.resume = () => Promise.resolve();
   }
+  try {
+    Object.defineProperty(AudioContextShim, 'name', { value: 'AudioContext', configurable: true });
+  } catch (e) {}
   globalThis.AudioContext = AudioContextShim;
-  globalThis.OfflineAudioContext = AudioContextShim;
+  const OfflineAudioContext = function OfflineAudioContext(ch, len, rate) {
+    AudioContextShim.call(this);
+    if (rate) this.sampleRate = rate;
+    this.length = len || 0;
+    this.startRendering = () => Promise.resolve(null);
+  };
+  OfflineAudioContext.prototype = AudioContextShim.prototype;
+  globalThis.OfflineAudioContext = OfflineAudioContext;
 
   // OffscreenCanvas needs a real context: the profile only creates a bare
   // constructor, and the WebGL vendor and renderer are read through this path.
@@ -783,8 +1294,8 @@
     this.width = w | 0;
     this.height = h | 0;
     const self = this;
-    this.getContext = function (type) {
-      return makeContext(self, String(type));
+    this.getContext = function (type, attrs) {
+      return makeContext(self, String(type), attrs);
     };
     this.convertToBlob = function () {
       return Promise.resolve({ size: 1024, type: 'image/png' });

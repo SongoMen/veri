@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use veri::{Client, Protection, RetryPolicy};
 use veri_integrations::{AwsWaf, Cloudflare, DataDome, PerimeterX, Vercel};
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const DEFAULT_CONCURRENCY: usize = 16;
 
 #[derive(Deserialize)]
@@ -21,6 +21,7 @@ struct Request {
     headers: Option<Vec<(String, String)>>,
     query: Option<Vec<(String, String)>>,
     body: Option<String>,
+    body_base64: Option<String>,
     json: Option<serde_json::Value>,
     cookie: Option<String>,
     name: Option<String>,
@@ -346,7 +347,12 @@ async fn send(client: &Client, method: &str, r: Request) -> Response {
     if let Some(q) = r.query {
         req = req.query(q);
     }
-    if let Some(j) = r.json {
+    if let Some(b64) = r.body_base64 {
+        let Some(bytes) = veri::http::unbase64(&b64) else {
+            return Response::err(id, "body_base64 is not valid base64");
+        };
+        req = req.body(bytes);
+    } else if let Some(j) = r.json {
         req = req.json(&j);
     } else if let Some(b) = r.body {
         req = req.body(b.into_bytes());

@@ -39,6 +39,20 @@
     dpr: _MISC.devicePixelRatio || 2,
     tz: globalThis.__TZ_OVERRIDE || _MISC.timezone || 'America/New_York',
   };
+  if (/iPhone|iPad/.test(IDENTITY.ua)) {
+    const pad = /iPad/.test(IDENTITY.ua);
+    IDENTITY.platform = pad ? 'MacIntel' : 'iPhone';
+    IDENTITY.maxTouchPoints = 5;
+    IDENTITY.screenW = pad ? 1024 : 393;
+    IDENTITY.screenH = pad ? 1366 : 852;
+    IDENTITY.availTop = 0;
+    IDENTITY.availH = IDENTITY.screenH;
+    IDENTITY.innerW = IDENTITY.screenW;
+    IDENTITY.innerH = pad ? 1292 : 664;
+    IDENTITY.colorDepth = 24;
+    IDENTITY.dpr = pad ? 2 : 3;
+  }
+
   globalThis.__IDENTITY = IDENTITY;
   globalThis.__PAGE_URL = PAGE_URL;
   globalThis.__URL = _U;

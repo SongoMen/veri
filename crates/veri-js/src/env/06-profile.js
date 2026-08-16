@@ -63,6 +63,30 @@
     'Scheduling', 'TrustedTypePolicyFactory'
   ]);
 
+  // prettier-ignore
+  const ASSIGNED = new Set([
+    'URL', 'activeElement', 'baseLatency', 'baseURI', 'caches', 'childElementCount',
+    'childNodes', 'children', 'clientHeight', 'clientWidth', 'clipboard', 'connection',
+    'currentScript', 'defaultView', 'destination', 'devicePixelRatio', 'documentURI',
+    'entryType', 'error', 'fatal', 'format', 'gpu', 'ignoreBOM', 'indexedDB', 'keyboard',
+    'listener', 'location', 'mediaDevices', 'mimeTypes', 'namespaceURI', 'nodeName',
+    'nodeType', 'origin', 'outputLatency', 'parent', 'parentElement', 'parentNode',
+    'permissions', 'plugins', 'pointerBeforeReferenceNode', 'port1', 'port2', 'readyState',
+    'referenceNode', 'response', 'responseText', 'sampleRate', 'screenX', 'screenY',
+    'searchParams', 'serviceWorker', 'state', 'status', 'storage', 'tagName',
+    'userAgentData', 'values', 'window'
+  ]);
+
+  const NULL_GLOBALS = new Set(P.nullGlobals || []);
+
+  const define = (name, value) =>
+    Object.defineProperty(__G0, name, {
+      value,
+      writable: true,
+      enumerable: /^on[a-z]/.test(name),
+      configurable: true,
+    });
+
   for (const name of Object.keys(P.globals)) {
     if (CORE.has(name) || KEEP.has(name)) continue;
     if (!CHROME_UA && (BLINK_ONLY.has(name) || /^(webkit|WebKit|Webkit)/.test(name))) continue;
@@ -72,10 +96,10 @@
     const t = P.globals[name];
     try {
       if (t === 'function') {
-        __G0[name] = makeCtor(name);
+        define(name, makeCtor(name));
         created++;
       } else if (t === 'object') {
-        __G0[name] = {};
+        define(name, NULL_GLOBALS.has(name) ? null : {});
         created++;
       } else if (t === 'number' || t === 'string' || t === 'boolean') {
         /* leave to explicit config */
@@ -88,6 +112,8 @@
       __G0.mozInnerScreenX = 0;
       __G0.mozInnerScreenY = 0;
       __G0.mozRTCPeerConnection = __G0.RTCPeerConnection;
+      __G0.navigator.buildID = '20181001000000';
+      __G0.CSS2Properties = makeCtor('CSS2Properties');
     } catch (e) {}
   }
 
@@ -110,6 +136,47 @@
     }
   }
 
+  const BLINK_PROTO = new Map([
+    [
+      'Navigator',
+      new Set([
+        'deviceMemory',
+        'userAgentData',
+        'connection',
+        'bluetooth',
+        'usb',
+        'serial',
+        'hid',
+        'keyboard',
+        'ink',
+        'presentation',
+        'scheduling',
+        'virtualKeyboard',
+        'managed',
+        'windowControlsOverlay',
+        'login',
+        'storageBuckets',
+        'getInstalledRelatedApps',
+        'setAppBadge',
+        'clearAppBadge',
+        'protectedAudience',
+        'joinAdInterestGroup',
+        'leaveAdInterestGroup',
+        'runAdAuction',
+        'updateAdInterestGroups',
+        'adAuctionComponents',
+        'clearOriginJoinedAdInterestGroups',
+        'deprecatedReplaceInURN',
+        'deprecatedURNToURL',
+        'canLoadAdAuctionFencedFrame',
+        'createAuctionNonce',
+      ]),
+    ],
+    ['Document', new Set(['pictureInPictureEnabled', 'pictureInPictureElement', 'prerendering'])],
+    ['Element', new Set(['computedStyleMap', 'scrollIntoViewIfNeeded'])],
+    ['HTMLElement', new Set(['virtualKeyboardPolicy', 'editContext', 'writingSuggestions'])],
+  ]);
+
   for (const name of Object.keys(P.prototypes)) {
     if (CORE.has(name)) continue;
     let ctor;
@@ -124,10 +191,17 @@
     const nonEnum = new Set(kinds.n || []);
     const accessors = new Set(kinds.a || []);
     const readable = new Set(kinds.q || []);
+    const writable = new Set(kinds.w || []);
     const constants = kinds.c || {};
 
     for (const prop of P.prototypes[name]) {
       if (prop === 'constructor') continue;
+      if (
+        !CHROME_UA &&
+        (BLINK_PROTO.get(name)?.has(prop) || /^(webkit|Webkit|WebKit)/.test(prop))
+      ) {
+        continue;
+      }
       try {
         if (Object.prototype.hasOwnProperty.call(proto, prop)) continue;
         const enumerable = !nonEnum.has(prop);
@@ -157,6 +231,7 @@
               if (quiet) return undefined;
               throw new TypeError('Illegal invocation');
             }
+            if (ctor && !(this instanceof ctor)) throw new TypeError('Illegal invocation');
             return stand_in;
           };
           const set = function (v) {
@@ -177,7 +252,11 @@
           };
           Object.defineProperty(get, 'name', { value: 'get ' + prop, configurable: true });
           Object.defineProperty(set, 'name', { value: 'set ' + prop, configurable: true });
-          Object.defineProperty(proto, prop, { get, set, configurable: true, enumerable });
+          const desc =
+            writable.has(prop) || ASSIGNED.has(prop)
+              ? { get, set, enumerable, configurable: true }
+              : { get, enumerable, configurable: true };
+          Object.defineProperty(proto, prop, desc);
           // 07-shims owns the native-source masking; an accessor that
           // stringifies to its own source is a tell.
           (globalThis.__NATIVE_PENDING || (globalThis.__NATIVE_PENDING = [])).push(get, set);
@@ -185,7 +264,9 @@
           continue;
         }
 
-        const fn = function () {};
+        const fn = function () {
+          if (ctor && !(this instanceof ctor)) throw new TypeError('Illegal invocation');
+        };
         Object.defineProperty(fn, 'name', { value: prop, configurable: true });
         Object.defineProperty(proto, prop, {
           value: fn,
@@ -327,20 +408,164 @@ globalThis.CSS = (function () {
     const n = String(name).trim();
     return set.has(n) || set.has(kebab(n));
   };
+  const KEYWORDS = {
+    display: [
+      'block',
+      'inline',
+      'inline-block',
+      'flex',
+      'inline-flex',
+      'grid',
+      'inline-grid',
+      'none',
+      'contents',
+      'flow-root',
+      'table',
+      'table-row',
+      'table-cell',
+      'list-item',
+      'ruby',
+      'inline-table',
+    ],
+    position: ['static', 'relative', 'absolute', 'fixed', 'sticky'],
+    overflow: ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    'overflow-x': ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    'overflow-y': ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    float: ['left', 'right', 'none', 'inline-start', 'inline-end'],
+    clear: ['left', 'right', 'both', 'none'],
+    visibility: ['visible', 'hidden', 'collapse'],
+    'box-sizing': ['content-box', 'border-box'],
+    'white-space': ['normal', 'nowrap', 'pre', 'pre-wrap', 'pre-line', 'break-spaces'],
+    'text-align': ['left', 'right', 'center', 'justify', 'start', 'end'],
+    'font-style': ['normal', 'italic', 'oblique'],
+    'flex-direction': ['row', 'row-reverse', 'column', 'column-reverse'],
+    'flex-wrap': ['nowrap', 'wrap', 'wrap-reverse'],
+    'pointer-events': [
+      'auto',
+      'none',
+      'visiblePainted',
+      'visibleFill',
+      'visibleStroke',
+      'visible',
+      'painted',
+      'fill',
+      'stroke',
+      'all',
+    ],
+    'text-transform': ['none', 'capitalize', 'uppercase', 'lowercase'],
+    'mix-blend-mode': [
+      'normal',
+      'multiply',
+      'screen',
+      'overlay',
+      'darken',
+      'lighten',
+      'difference',
+    ],
+  };
+  const GLOBAL_KW = ['inherit', 'initial', 'unset', 'revert', 'revert-layer'];
+  const COLOR_NAMES =
+    /^(transparent|currentcolor|black|white|red|green|blue|yellow|orange|purple|gray|grey|silver|maroon|olive|lime|aqua|teal|navy|fuchsia)$/i;
+  const LENGTH =
+    /^[+-]?(\d+\.?\d*|\.\d+)(px|em|rem|ex|ch|vw|vh|vmin|vmax|cm|mm|in|pt|pc|q|%|fr|deg|rad|turn|s|ms)?$/i;
+  const isColor = (v) =>
+    COLOR_NAMES.test(v) ||
+    /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v) ||
+    /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(/i.test(v);
+  const valueOk = (prop, value) => {
+    const p = kebab(String(prop).trim()).replace(/^-+/, '');
+    const v = String(value).trim();
+    if (!v) return false;
+    if (GLOBAL_KW.indexOf(v.toLowerCase()) >= 0) return true;
+    if (/^(var|calc|env|clamp|min|max)\(/i.test(v)) return true;
+    const kw = KEYWORDS[p];
+    if (kw) return kw.indexOf(v.toLowerCase()) >= 0;
+    if (/color$/.test(p) || p === 'fill' || p === 'stroke') return isColor(v);
+    if (
+      /(width|height|size|top|right|bottom|left|margin|padding|gap|radius|spacing|indent|offset)$/.test(
+        p,
+      )
+    ) {
+      return v === 'auto' || v === 'none' || v.split(/\s+/).every((part) => LENGTH.test(part));
+    }
+    return true;
+  };
   return {
     supports(a, b) {
       try {
         if (b === undefined) {
-          const at = String(a).indexOf(':');
-          return at > 0 ? known(String(a).slice(0, at)) : false;
+          // The one-argument form is a condition: `(display: grid)`.
+          let text = String(a).trim();
+          while (text.charAt(0) === '(' && text.charAt(text.length - 1) === ')') {
+            text = text.slice(1, -1).trim();
+          }
+          const at = text.indexOf(':');
+          if (at <= 0) return false;
+          return known(text.slice(0, at)) && valueOk(text.slice(0, at), text.slice(at + 1));
         }
-        return known(a);
+        return known(a) && valueOk(a, b);
       } catch (e) {
         return false;
       }
     },
-    escape: (s) => String(s),
+    // https://drafts.csswg.org/cssom/#serialize-an-identifier
+    escape(value) {
+      const s = String(value);
+      let out = '';
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        const ch = s.charAt(i);
+        if (c === 0) {
+          out += '�';
+        } else if ((c >= 0x1 && c <= 0x1f) || c === 0x7f) {
+          out += '\\' + c.toString(16) + ' ';
+        } else if (i === 0 && c >= 0x30 && c <= 0x39) {
+          out += '\\' + c.toString(16) + ' ';
+        } else if (i === 1 && c >= 0x30 && c <= 0x39 && s.charCodeAt(0) === 0x2d) {
+          out += '\\' + c.toString(16) + ' ';
+        } else if (i === 0 && c === 0x2d && s.length === 1) {
+          out += '\\' + ch;
+        } else if (
+          c >= 0x80 ||
+          c === 0x2d ||
+          c === 0x5f ||
+          (c >= 0x30 && c <= 0x39) ||
+          (c >= 0x41 && c <= 0x5a) ||
+          (c >= 0x61 && c <= 0x7a)
+        ) {
+          out += ch;
+        } else {
+          out += '\\' + ch;
+        }
+      }
+      return out;
+    },
   };
+})();
+// The typed OM unit helpers: CSS.px(3) and friends.
+(function () {
+  // prettier-ignore
+  const UNITS = ['number','percent','em','ex','ch','rem','vw','vh','vmin','vmax','cm','mm','in',
+    'pt','pc','px','Q','deg','grad','rad','turn','s','ms','Hz','kHz','dpi','dpcm','dppx','fr'];
+  for (const u of UNITS) {
+    try {
+      const fn = (v) => {
+        const o = {
+          value: Number(v),
+          unit: u === 'number' ? 'number' : u === 'percent' ? 'percent' : u,
+        };
+        o.toString = () =>
+          u === 'number' ? String(o.value) : o.value + (u === 'percent' ? '%' : u);
+        try {
+          const C = globalThis.CSSUnitValue;
+          if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(o, C.prototype);
+        } catch (e) {}
+        return o;
+      };
+      Object.defineProperty(fn, 'name', { value: u, configurable: true });
+      globalThis.CSS[u] = fn;
+    } catch (e) {}
+  }
 })();
 globalThis.trustedTypes = {
   createPolicy: (n, r) => ({
@@ -479,19 +704,74 @@ globalThis.__MQ = (function () {
   for (const k of Object.keys(src)) t[String(k).replace(/\s+/g, '')] = src[k];
   return t;
 })();
-globalThis.matchMedia = (q) => ({
-  matches: (function () {
-    const k = String(q).replace(/\s+/g, '');
-    if (Object.prototype.hasOwnProperty.call(__MQ, k)) return __MQ[k] === true;
-    return /min-width:\s*0|all/.test(String(q));
-  })(),
-  media: String(q),
-  addListener() {},
-  removeListener() {},
-  addEventListener() {},
-  removeEventListener() {},
-  onchange: null,
-});
+// Only `min-width: 0` used to match, so `(min-width: 100px)` came back false on
+// a 1512px viewport. The harvested table answers the preference queries; the
+// dimensional ones are evaluated against the window the identity reports.
+globalThis.__evalMedia = function __evalMedia(q) {
+  const text = String(q).trim();
+  const k = text.replace(/\s+/g, '');
+  if (Object.prototype.hasOwnProperty.call(__MQ, k)) return __MQ[k] === true;
+  if (!text || text === 'all') return true;
+  // A comma is a union, and every comma-free part must hold.
+  if (text.indexOf(',') >= 0) return text.split(',').some((p) => __evalMedia(p));
+  let ok = true;
+  let sawFeature = false;
+  const re = /\(\s*([a-z-]+)\s*(?::\s*([^)]+))?\)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    sawFeature = true;
+    const feat = m[1];
+    const raw = (m[2] || '').trim();
+    const num = parseFloat(raw);
+    const px = /rem$|em$/.test(raw) ? num * 16 : num;
+    const W = globalThis.innerWidth || 0;
+    const H = globalThis.innerHeight || 0;
+    const dpr = globalThis.devicePixelRatio || 1;
+    let val;
+    if (feat === 'min-width') val = W >= px;
+    else if (feat === 'max-width') val = W <= px;
+    else if (feat === 'width') val = W === px;
+    else if (feat === 'min-height') val = H >= px;
+    else if (feat === 'max-height') val = H <= px;
+    else if (feat === 'height') val = H === px;
+    else if (feat === 'min-device-width') val = (globalThis.screen || {}).width >= px;
+    else if (feat === 'max-device-width') val = (globalThis.screen || {}).width <= px;
+    else if (feat === 'orientation') val = raw === (W >= H ? 'landscape' : 'portrait');
+    else if (feat === 'min-resolution') val = dpr * 96 >= (/dppx/.test(raw) ? num * 96 : num);
+    else if (feat === 'max-resolution') val = dpr * 96 <= (/dppx/.test(raw) ? num * 96 : num);
+    else if (feat === 'min-device-pixel-ratio' || feat === '-webkit-min-device-pixel-ratio')
+      val = dpr >= num;
+    else if (feat === 'max-device-pixel-ratio' || feat === '-webkit-max-device-pixel-ratio')
+      val = dpr <= num;
+    else {
+      const kk = ('(' + feat + (raw ? ':' + raw : '') + ')').replace(/\s+/g, '');
+      val = Object.prototype.hasOwnProperty.call(__MQ, kk) ? __MQ[kk] === true : false;
+    }
+    ok = ok && val;
+  }
+  if (!sawFeature) return /^(screen|all)$/i.test(text.replace(/^only\s+/i, ''));
+  if (/^\s*not\s/i.test(text)) return !ok;
+  return ok;
+};
+globalThis.matchMedia = (q) => {
+  const mql = {
+    matches: globalThis.__evalMedia(q),
+    media: String(q),
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {
+      return false;
+    },
+    onchange: null,
+  };
+  try {
+    const C = globalThis.MediaQueryList;
+    if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(mql, C.prototype);
+  } catch (e) {}
+  return mql;
+};
 // The computed properties a real element reports, in the order it reports them.
 globalThis.__CSS_LONGHAND = Object.keys(globalThis.__COMPUTED || {});
 // Other fragments need this to tell a CSS property from any other name.
@@ -500,6 +780,18 @@ globalThis.__CSS_LONGHAND = __CSS_LONGHAND;
 // A computed style with one method answers one question and throws on the rest.
 // Font measurement is a standard fingerprint and it reads several.
 globalThis.getComputedStyle = function (el) {
+  // Returns a CSSStyleDeclaration; a plain object is read off by its
+  // constructor name. Declared here rather than at file scope, which in this
+  // file is the global object.
+  const __asCSSStyleDeclaration = (o) => {
+    try {
+      const C = globalThis.CSSStyleDeclaration;
+      if (o && typeof C === 'function' && C.prototype && Object.getPrototypeOf(o) !== C.prototype) {
+        Object.setPrototypeOf(o, C.prototype);
+      }
+    } catch (e) {}
+    return o;
+  };
   // `font: caption` and its five siblings are system fonts: the browser
   // resolves each to a real family, size and weight. Left unresolved they all
   // computed to the page default, so a collector asking what the six system
@@ -607,7 +899,7 @@ globalThis.getComputedStyle = function (el) {
     style[camel] = COMPUTED[k];
     style[k] = COMPUTED[k];
   }
-  return style;
+  return __asCSSStyleDeclaration(style);
 };
 globalThis.scrollTo = function () {};
 globalThis.scrollBy = function () {};
@@ -617,7 +909,31 @@ globalThis.open = function () {
 globalThis.close = function () {};
 globalThis.focus = function () {};
 globalThis.blur = function () {};
-globalThis.getSelection = () => ({ toString: () => '', rangeCount: 0 });
+globalThis.getSelection = () => {
+  const sel = {
+    anchorNode: null,
+    anchorOffset: 0,
+    focusNode: null,
+    focusOffset: 0,
+    isCollapsed: true,
+    rangeCount: 0,
+    type: 'None',
+    toString: () => '',
+    getRangeAt() {
+      throw new (globalThis.DOMException || Error)('index out of range', 'IndexSizeError');
+    },
+    removeAllRanges() {},
+    addRange() {},
+    collapse() {},
+    selectAllChildren() {},
+    containsNode: () => false,
+  };
+  try {
+    const C = globalThis.Selection;
+    if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(sel, C.prototype);
+  } catch (e) {}
+  return sel;
+};
 globalThis.indexedDB = {
   open: () => ({ addEventListener() {}, onsuccess: null, onerror: null }),
   deleteDatabase: () => ({}),

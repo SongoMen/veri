@@ -45,7 +45,7 @@ function mockClient(env = {}) {
     try {
       const info = await veri.info();
       assert.ok(Array.isArray(info.identities), 'identities missing');
-      assert.equal(info.protocol, 1);
+      assert.equal(info.protocol, 2);
     } finally {
       await veri.close();
     }
@@ -120,10 +120,73 @@ function mockClient(env = {}) {
   await test('POST sends a JSON body', async () => {
     const veri = mockClient();
     try {
-      const res = await veri.post('https://mock.test/x', { json: { a: 1 } });
+      const res = await veri.post('https://mock.test/x', { body: { a: 1 } });
       const echo = res.json();
       assert.equal(echo.method, 'post');
       assert.deepEqual(echo.json, { a: 1 });
+    } finally {
+      await veri.close();
+    }
+  });
+
+  await test('body takes an object and serialises it', async () => {
+    const veri = mockClient();
+    try {
+      const res = await veri.post('https://mock.test/x', { body: { a: 1 } });
+      const echo = res.json();
+      assert.deepEqual(echo.json, { a: 1 });
+      assert.equal(echo.body, null);
+    } finally {
+      await veri.close();
+    }
+  });
+
+  await test('body takes a string and sends it verbatim', async () => {
+    const veri = mockClient();
+    try {
+      const res = await veri.post('https://mock.test/x', { body: 'a=1&b=2' });
+      const echo = res.json();
+      assert.equal(echo.body, 'a=1&b=2');
+      assert.equal(echo.json, null);
+    } finally {
+      await veri.close();
+    }
+  });
+
+  await test('a Buffer body crosses as bytes, not as a JSON object', async () => {
+    const veri = mockClient();
+    try {
+      const res = await veri.post('https://mock.test/x', { body: Buffer.from([0, 255, 128]) });
+      const echo = res.json();
+      // base64 of 00 ff 80, decoded back to the same bytes by the daemon.
+      assert.equal(echo.bodyBase64, 'AP+A');
+      assert.equal(echo.body, null);
+      assert.equal(echo.json, null);
+    } finally {
+      await veri.close();
+    }
+  });
+
+  await test('a TypedArray view sends only its own window', async () => {
+    const veri = mockClient();
+    try {
+      const whole = Uint8Array.from([1, 2, 3, 4, 5]);
+      const view = whole.subarray(1, 4); // 2,3,4
+      const res = await veri.post('https://mock.test/x', { body: view });
+      assert.equal(res.json().bodyBase64, Buffer.from([2, 3, 4]).toString('base64'));
+    } finally {
+      await veri.close();
+    }
+  });
+
+  await test('a streaming body is refused rather than silently buffered', async () => {
+    const veri = mockClient();
+    try {
+      const stream = require('node:stream').Readable.from([Buffer.from('hi')]);
+      await assert.rejects(
+        () => veri.post('https://mock.test/x', { body: stream }),
+        /streaming body cannot be sent/,
+      );
     } finally {
       await veri.close();
     }

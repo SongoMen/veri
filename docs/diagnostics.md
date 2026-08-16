@@ -113,15 +113,15 @@ default that the matching option overrides.
 
 The rest are read elsewhere and are not solver options at all:
 
-| Variable               | Read by            | Effect                                                                                                                                         |
-| ---------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VERI_PUMP_ROUNDS`     | the solve loop     | Timer rounds a challenge gets before the run gives up. Default 2000. Raise it for a challenge that keeps scheduling work rather than finishing |
-| `VERI_NOSEAL`          | the solve loop     | Leaves the environment's internals unsealed. For debugging only: a challenge can then see them                                                 |
+| Variable               | Read by            | Effect                                                                                                                                           |
+| ---------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `VERI_PUMP_ROUNDS`     | the solve loop     | Timer rounds a challenge gets before the run gives up. Default 2000. Raise it for a challenge that keeps scheduling work rather than finishing   |
+| `VERI_NOSEAL`          | the solve loop     | Leaves the environment's internals unsealed. For debugging only: a challenge can then see them                                                   |
 | `VERI_FLOW`            | the solve loop     | Print every bridge call with the milliseconds it happened at, its sent and received bytes, the cookies the page set, and the errors it swallowed |
-| `VERI_REALM_URL`       | the solve loop     | Resolve a relative url against the realm that asked rather than the page. Off, and measured 0/4 against 6/6; see above                          |
-| `VERI_MAX_CONCURRENCY` | `veri-daemon`      | Requests solved at once. Default 16                                                                                                            |
-| `VERI_DAEMON_PATH`     | the Node client    | Explicit path to the daemon binary, ahead of the platform package                                                                              |
-| `VERI_PROXY`           | `tools/veri-tools` | Proxy for the developer tools, when `--proxy` is not passed                                                                                    |
+| `VERI_REALM_URL`       | the solve loop     | Resolve a relative url against the realm that asked rather than the page. Off, and measured 0/4 against 6/6; see above                           |
+| `VERI_MAX_CONCURRENCY` | `veri-daemon`      | Requests solved at once. Default 16                                                                                                              |
+| `VERI_DAEMON_PATH`     | the Node client    | Explicit path to the daemon binary, ahead of the platform package                                                                                |
+| `VERI_PROXY`           | `tools/veri-tools` | Proxy for the developer tools, when `--proxy` is not passed                                                                                      |
 
 ## Testing
 

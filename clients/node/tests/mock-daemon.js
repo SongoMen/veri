@@ -3,7 +3,7 @@
 const readline = require('node:readline');
 
 const JAR = {};
-const PROTOCOL = Number(process.env.MOCK_PROTOCOL || 1);
+const PROTOCOL = Number(process.env.MOCK_PROTOCOL || 2);
 
 if (process.env.MOCK_DIE) {
   process.stderr.write('libfoo.so.6: cannot open shared object file\n');
@@ -305,6 +305,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       query: req.query || [],
       json: req.json ?? null,
       body: req.body ?? null,
+      bodyBase64: req.bodyBase64 ?? null,
     }),
     identity: 'Firefox143',
     attempts: 1,

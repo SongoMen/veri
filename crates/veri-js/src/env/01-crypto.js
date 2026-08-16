@@ -1,4 +1,7 @@
 (function () {
+  const __defineOwn = (o, k, v) =>
+    Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+
   globalThis.__sha256 = function __sha256(bytes) {
     const K = [
       0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -468,7 +471,7 @@
   };
 
   globalThis.TextEncoder = function TextEncoder() {
-    this.encoding = 'utf-8';
+    __defineOwn(this, 'encoding', 'utf-8');
     this.encode = function (str) {
       str = String(str === undefined ? '' : str);
       const out = [];
@@ -502,7 +505,7 @@
     };
   };
   globalThis.TextDecoder = function TextDecoder(enc) {
-    this.encoding = (enc || 'utf-8').toLowerCase();
+    __defineOwn(this, 'encoding', (enc || 'utf-8').toLowerCase());
     this.fatal = false;
     this.ignoreBOM = false;
     this.decode = function (buf) {

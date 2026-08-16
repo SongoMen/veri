@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 veri = { path = "../../crates/veri" }
-veri-integrations = { path = "../../crates/veri-integrations", version = "0.1.0" }
+veri-integrations = { path = "../../crates/veri-integrations", version = "0.2.0" }
 veri-js = { path = "../../crates/veri-js" }
 veri-core = { path = "../../crates/veri-core" }
 wreq.workspace = true

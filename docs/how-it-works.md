@@ -107,6 +107,7 @@ scripts and reads the jar afterwards. Nothing about a provider's protocol is
 encoded: the page sets cookies, and the cookies it set are the answer.
 
 ## Shadow DOM
+
 Every page uses shadow DOM the ordinary way, so
 `shadow_dom(true)` is what a solver normally wants and what every protection
 registered by the daemon and `veri-tools` sets.

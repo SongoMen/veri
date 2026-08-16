@@ -147,3 +147,19 @@ fn errors_do_not_discard_a_real_clearance() {
     let cf = Cloudflare::with_solver(noisy);
     assert!(cf.clear(&parts(403, &h, "cf_chl_opt"), "ua", dead_bridge(), jar.as_ref()).is_ok());
 }
+
+#[test]
+fn an_interactive_challenge_is_not_scriptable() {
+    let h = headers([("cf-mitigated", "challenge"), ("cf-ray", "a29b65273da6f17e")]);
+    let managed = interstitial().replace("non-interactive", "managed");
+    assert_eq!(Cloudflare::demand(&parts(403, &h, &managed)), Some(Demand::Script));
+    assert_eq!(Cloudflare::detect_only().inspect(&parts(403, &h, &managed)), Outcome::Challenge);
+
+    let interactive = interstitial().replace("non-interactive", "interactive");
+    assert_eq!(Cloudflare::demand(&parts(403, &h, &interactive)), Some(Demand::Captcha));
+    assert_eq!(Cloudflare::detect_only().inspect(&parts(403, &h, &interactive)), Outcome::Blocked);
+
+    // Double-quoted and spaced, as some deliveries write it.
+    let spaced = interstitial().replace("cType: 'non-interactive'", "cType:  \"interactive\"");
+    assert_eq!(Cloudflare::demand(&parts(403, &h, &spaced)), Some(Demand::Captcha));
+}

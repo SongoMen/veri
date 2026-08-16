@@ -237,6 +237,12 @@ fn unknown_identity(name: &str) -> String {
     )
 }
 
+enum AfterClear {
+    Passed(Response),
+    Rechallenged(Fetched),
+    NotCleared,
+}
+
 struct Inner {
     sessions: SessionStore,
     policy: Policy,
@@ -441,21 +447,22 @@ impl Client {
                 return Ok(fetched.into_response(*id, rung + 1, None, had_clearance));
             }
 
-            if fetched.verdict == Verdict::Challenged {
-                if let Some(res) =
-                    self.clear_then_retry(&session, &fetched, &spec, &mut budget, rung).await?
-                {
-                    return Ok(res);
+            let mut answered = fetched;
+            if answered.verdict == Verdict::Challenged {
+                match self.clear_then_retry(&session, &answered, &spec, &mut budget, rung).await? {
+                    AfterClear::Passed(res) => return Ok(res),
+                    AfterClear::Rechallenged(after) => answered = after,
+                    AfterClear::NotCleared => {}
                 }
             }
 
-            if !fetched.verdict.identity_might_help() {
-                return Ok(fetched.into_response(*id, rung + 1, None, had_clearance));
+            if !answered.verdict.identity_might_help() {
+                return Ok(answered.into_response(*id, rung + 1, None, had_clearance));
             }
 
-            tried.push((*id, fetched.verdict));
+            tried.push((*id, answered.verdict));
             last_response =
-                Some(Box::new(fetched.into_response(*id, rung + 1, None, had_clearance)));
+                Some(Box::new(answered.into_response(*id, rung + 1, None, had_clearance)));
         }
 
         let cleared = self.inner.sessions.any_clearance(&host, |s| self.holds_clearance(s));
@@ -469,19 +476,19 @@ impl Client {
         spec: &RequestSpec,
         budget: &mut u32,
         rung: usize,
-    ) -> Result<Option<Response>, Error> {
+    ) -> Result<AfterClear, Error> {
         let id = session.identity;
-        let Some(p) = fetched.claimed.clone() else { return Ok(None) };
+        let Some(p) = fetched.claimed.clone() else { return Ok(AfterClear::NotCleared) };
         if let Err(e) = self.try_clear(session, fetched, &p) {
             tracing::debug!(identity = id.name, error = %e, "clear failed");
-            return Ok(None);
+            return Ok(AfterClear::NotCleared);
         }
 
         let after = match self.send_with_retry(session, spec, budget).await {
             Ok(f) => f,
             Err(Error::Transport(e)) if !e.is_egress_fault() => {
                 tracing::debug!(identity = id.name, error = %e, "cleared, then the retry failed");
-                return Ok(None);
+                return Ok(AfterClear::NotCleared);
             }
             Err(other) => return Err(other),
         };
@@ -492,10 +499,10 @@ impl Client {
                 verdict = %after.verdict,
                 "cleared but the retry was not ok"
             );
-            return Ok(None);
+            return Ok(AfterClear::Rechallenged(after));
         }
         tracing::info!(identity = id.name, protection = p.name(), "cleared");
-        Ok(Some(after.into_response(id, rung + 1, Some(p.name()), false)))
+        Ok(AfterClear::Passed(after.into_response(id, rung + 1, Some(p.name()), false)))
     }
 
     async fn send_with_retry(
@@ -814,7 +821,9 @@ impl RequestBuilder {
     }
 
     fn set_content_type(&mut self, value: &str) {
-        self.spec.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
+        if self.spec.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+            return;
+        }
         self.spec.headers.push(("content-type".into(), value.into()));
     }
 

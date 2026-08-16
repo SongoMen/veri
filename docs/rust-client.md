@@ -37,8 +37,7 @@ let client = Client::builder()
 
 One solver, configured per protection. `V8Solver::new()` runs every script the
 page carries; `.seed(name)` narrows that to the one inline script declaring that
-global, which is what Cloudflare needs. The options above are the ones measured
-to work, so start from them rather than the bare defaults. See
+global.
 [Shadow DOM](how-it-works.md#shadow-dom).
 
 `detect_only()` in place of `with_solver(..)` classifies a challenge without

@@ -1,39 +1,171 @@
 (function () {
-  globalThis.__matches = function __matches(el, sel) {
-    sel = String(sel).trim();
-    if (!sel) return false;
-    if (sel === '*') return true;
-    try {
-      const m = /^([a-zA-Z][\w-]*)?(?:#([\w-]+))?(?:\.([\w-]+))?((?:\[[^\]]+\])*)$/.exec(sel);
-      if (!m) return false;
-      const tag = m[1],
-        id = m[2],
-        cls = m[3],
-        attrs = m[4];
-      if (tag && el.tagName !== tag.toUpperCase()) return false;
-      if (id && el.id !== id) return false;
-      if (cls && !(el.classList && el.classList.contains(cls))) return false;
-      if (attrs) {
-        const parts = attrs.match(/\[[^\]]+\]/g) || [];
-        for (let i = 0; i < parts.length; i++) {
-          const body = parts[i].slice(1, -1);
-          const am = /^([\w-]+)(?:([*^$~|]?=)"?([^"\]]*)"?)?$/.exec(body);
-          if (!am) return false;
-          const name = am[1],
-            op = am[2],
-            want = am[3];
-          let have = el.getAttribute ? el.getAttribute(name) : null;
-          if (have === null || have === undefined) have = el[name];
-          if (have === null || have === undefined) return false;
-          if (!op) continue;
-          have = String(have);
-          if (op === '=' && have !== want) return false;
-          if (op === '*=' && have.indexOf(want) < 0) return false;
-          if (op === '^=' && have.slice(0, want.length) !== want) return false;
-          if (op === '$=' && have.slice(-want.length) !== want) return false;
+  const __SELF = new WeakMap();
+
+  function __compound(el, sel) {
+    if (!el || el.nodeType !== 1) return false;
+    if (sel === '*' || sel === '') return true;
+    const re = /([#.]?[\w-]+|\[[^\]]+\]|:[\w-]+(?:\([^)]*\))?|\*)/g;
+    let m;
+    while ((m = re.exec(sel))) {
+      const tok = m[1];
+      if (tok === '*') continue;
+      const c = tok.charAt(0);
+      if (c === '#') {
+        if (el.id !== tok.slice(1)) return false;
+      } else if (c === '.') {
+        if (!(el.classList && el.classList.contains(tok.slice(1)))) return false;
+      } else if (c === '[') {
+        const body = tok.slice(1, -1);
+        const am = /^([\w-]+)(?:([*^$~|]?=)\s*"?([^"\]]*)"?)?$/.exec(body);
+        if (!am) return false;
+        let have = el.getAttribute ? el.getAttribute(am[1]) : null;
+        if (have === null || have === undefined) have = el[am[1]];
+        if (have === null || have === undefined) return false;
+        if (!am[2]) continue;
+        have = String(have);
+        const want = am[3];
+        if (am[2] === '=' && have !== want) return false;
+        if (am[2] === '*=' && have.indexOf(want) < 0) return false;
+        if (am[2] === '^=' && have.slice(0, want.length) !== want) return false;
+        if (am[2] === '$=' && have.slice(-want.length) !== want) return false;
+        if (am[2] === '~=' && have.split(/\s+/).indexOf(want) < 0) return false;
+        if (am[2] === '|=' && have !== want && have.slice(0, want.length + 1) !== want + '-') {
+          return false;
         }
+      } else if (c === ':') {
+        const pm = /^:([\w-]+)(?:\((.*)\))?$/.exec(tok);
+        if (!pm) return false;
+        const name = pm[1];
+        const arg = pm[2];
+        const sibs = (el.parentNode && el.parentNode.children) || [];
+        const idx = Array.prototype.indexOf.call(sibs, el);
+        if (name === 'not') {
+          if (__matchesOne(el, arg)) return false;
+        } else if (name === 'first-child') {
+          if (idx !== 0) return false;
+        } else if (name === 'last-child') {
+          if (idx !== sibs.length - 1) return false;
+        } else if (name === 'only-child') {
+          if (sibs.length !== 1) return false;
+        } else if (name === 'nth-child') {
+          const a = String(arg).trim();
+          if (a === 'odd') {
+            if (idx % 2 !== 0) return false;
+          } else if (a === 'even') {
+            if (idx % 2 !== 1) return false;
+          } else if (/^\d+$/.test(a)) {
+            if (idx !== parseInt(a, 10) - 1) return false;
+          }
+        } else if (name === 'root') {
+          if (el !== globalThis.document.documentElement) return false;
+        } else if (name === 'empty') {
+          if (el.childNodes && el.childNodes.length) return false;
+        } else if (name === 'checked' || name === 'disabled' || name === 'required') {
+          if (!el[name]) return false;
+        }
+        // Anything else (:hover, :focus, ...) is false in a page nobody touched.
+        else if (name === 'hover' || name === 'focus' || name === 'active') return false;
+      } else if (el.tagName !== tok.toUpperCase()) {
+        return false;
       }
-      return true;
+    }
+    return true;
+  }
+
+  // One complex selector: compounds joined by combinators, matched right to left.
+  function __matchesOne(el, sel) {
+    const text = String(sel).trim();
+    if (!text) return false;
+    const parts = [];
+    let buf = '';
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charAt(i);
+      if (ch === '(' || ch === '[') depth++;
+      if (ch === ')' || ch === ']') depth--;
+      if (depth === 0 && (ch === ' ' || ch === '>' || ch === '+' || ch === '~')) {
+        if (buf) parts.push(buf);
+        buf = '';
+        if (ch !== ' ') parts.push(ch);
+        else if (parts.length && parts[parts.length - 1] !== ' ') parts.push(' ');
+        continue;
+      }
+      buf += ch;
+    }
+    if (buf) parts.push(buf);
+    // Trim any combinator that ended up adjacent to another.
+    const seq = parts.filter((p, i) => !(p === ' ' && (i === 0 || /^[>+~]$/.test(parts[i - 1]))));
+    let node = el;
+    let i = seq.length - 1;
+    if (i < 0 || !__compound(node, seq[i])) return false;
+    i--;
+    while (i >= 0) {
+      const comb = seq[i];
+      const target = seq[i - 1];
+      if (target === undefined) return false;
+      if (comb === '>') {
+        node = node.parentNode;
+        if (!node || !__compound(node, target)) return false;
+      } else if (comb === ' ') {
+        let n = node.parentNode;
+        let found = null;
+        while (n && n.nodeType === 1) {
+          if (__compound(n, target)) {
+            found = n;
+            break;
+          }
+          n = n.parentNode;
+        }
+        if (!found) return false;
+        node = found;
+      } else if (comb === '+' || comb === '~') {
+        const sibs = (node.parentNode && node.parentNode.children) || [];
+        const at = Array.prototype.indexOf.call(sibs, node);
+        let found = null;
+        if (comb === '+') {
+          if (at > 0 && __compound(sibs[at - 1], target)) found = sibs[at - 1];
+        } else {
+          for (let k = at - 1; k >= 0; k--) {
+            if (__compound(sibs[k], target)) {
+              found = sibs[k];
+              break;
+            }
+          }
+        }
+        if (!found) return false;
+        node = found;
+      } else {
+        return false;
+      }
+      i -= 2;
+    }
+    return true;
+  }
+
+  globalThis.__matches = function __matches(el, sel) {
+    const text = String(sel).trim();
+    if (!text) return false;
+    // A selector list: any one of them matching is a match.
+    const list = [];
+    let buf = '';
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charAt(i);
+      if (ch === '(' || ch === '[') depth++;
+      if (ch === ')' || ch === ']') depth--;
+      if (ch === ',' && depth === 0) {
+        list.push(buf);
+        buf = '';
+        continue;
+      }
+      buf += ch;
+    }
+    list.push(buf);
+    try {
+      for (const one of list) {
+        if (one.trim() && __matchesOne(el, one)) return true;
+      }
+      return false;
     } catch (e) {
       return false;
     }
@@ -98,6 +230,118 @@
         typeof f === 'function' ? f.call(el, ev) : f.handleEvent(ev);
       } catch (e) {}
     }
+  };
+
+  globalThis.__notifyMutation = function __notifyMutation(target, record) {
+    const list = globalThis.__MUTATION_OBSERVERS;
+    if (!list || !list.length) return;
+    for (const reg of list.slice()) {
+      let match = reg.target === target;
+      if (!match && reg.options && reg.options.subtree) {
+        for (let n = target, hops = 0; n && hops < 256; n = n.parentNode, hops++) {
+          if (n === reg.target) {
+            match = true;
+            break;
+          }
+        }
+      }
+      if (!match) continue;
+      const o = reg.options || {};
+      if (record.type === 'childList' && !o.childList) continue;
+      if (record.type === 'attributes' && !o.attributes) continue;
+      if (record.type === 'characterData' && !o.characterData) continue;
+      const full = Object.assign(
+        {
+          type: record.type,
+          target,
+          addedNodes: [],
+          removedNodes: [],
+          previousSibling: null,
+          nextSibling: null,
+          attributeName: null,
+          attributeNamespace: null,
+          oldValue: null,
+        },
+        record,
+      );
+      reg.observer._records.push(full);
+      if (reg.observer.__queued) continue;
+      reg.observer.__queued = true;
+      const fire = () => {
+        reg.observer.__queued = false;
+        const recs = reg.observer._records;
+        reg.observer._records = [];
+        if (!recs.length) return;
+        try {
+          reg.cb.call(reg.observer, recs, reg.observer);
+        } catch (e) {}
+      };
+      try {
+        typeof queueMicrotask === 'function' ? queueMicrotask(fire) : setTimeout(fire, 0);
+      } catch (e) {
+        try {
+          setTimeout(fire, 0);
+        } catch (e2) {}
+      }
+    }
+  };
+
+  // Only the target used to hear an event: nothing bubbled, target and
+  // currentTarget were never moved along the path, preventDefault did nothing
+  // and `{once: true}` fired every time.
+  globalThis.__dispatch = function __dispatch(target, ev) {
+    if (!ev) return true;
+    const read = globalThis.__evRead;
+    const patch = globalThis.__evPatch;
+    const d = read ? read(ev) : null;
+    const type = (d ? d.type : ev.type) || '';
+    const bubbles = d ? d.bubbles : ev.bubbles;
+    const path = [];
+    for (let n = target, hops = 0; n && hops < 256; n = n.parentNode, hops++) path.push(n);
+    if (globalThis.document) {
+      if (path.indexOf(globalThis.document) < 0) path.push(globalThis.document);
+      if (path.indexOf(globalThis) < 0) path.push(globalThis);
+    }
+    if (patch) patch(ev, { target, __path: path.slice(), eventPhase: 2, __stop: false });
+    else {
+      try {
+        ev.target = target;
+      } catch (e) {}
+    }
+    const chain = bubbles ? path : [target];
+    for (const node of chain) {
+      if (patch) patch(ev, { currentTarget: node, eventPhase: node === target ? 2 : 3 });
+      else {
+        try {
+          ev.currentTarget = node;
+        } catch (e) {}
+      }
+      try {
+        const on = node['on' + type];
+        if (typeof on === 'function') on.call(node, ev);
+      } catch (e) {}
+      const list = ((node.__handlers && node.__handlers[type]) || []).slice();
+      for (const f of list) {
+        try {
+          const fn = typeof f === 'function' ? f : f && f.handleEvent;
+          if (typeof fn === 'function') fn.call(typeof f === 'function' ? node : f, ev);
+        } catch (e) {}
+        if (f && f.__once) {
+          const cur = node.__handlers && node.__handlers[type];
+          if (cur) {
+            const at = cur.indexOf(f);
+            if (at >= 0) cur.splice(at, 1);
+          }
+        }
+        const st = read ? read(ev) : null;
+        if (st && st.__stopNow) break;
+      }
+      const st = read ? read(ev) : null;
+      if (st && st.__stop) break;
+    }
+    if (patch) patch(ev, { currentTarget: null, eventPhase: 0 });
+    const fin = read ? read(ev) : null;
+    return !(fin && fin.defaultPrevented);
   };
 
   /// Reachable from the document, crossing out of a shadow tree through its
@@ -212,17 +456,30 @@
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
+  function __tag(o, ctorName) {
+    try {
+      const C = globalThis[ctorName];
+      if (o && typeof C === 'function' && C.prototype && Object.getPrototypeOf(o) !== C.prototype) {
+        Object.setPrototypeOf(o, C.prototype);
+      }
+    } catch (e) {}
+    return o;
+  }
+
   function __boxRect(b) {
-    return {
-      x: 0,
-      y: 0,
-      width: b.width,
-      height: b.height,
-      top: 0,
-      left: 0,
-      right: b.width,
-      bottom: b.height,
-    };
+    return __tag(
+      {
+        x: 0,
+        y: 0,
+        width: b.width,
+        height: b.height,
+        top: 0,
+        left: 0,
+        right: b.width,
+        bottom: b.height,
+      },
+      'DOMRect',
+    );
   }
 
   function __mulM(m, n) {
@@ -330,11 +587,289 @@
     return m;
   }
 
+  const __CURVE_STEPS = 256;
+
+  function __pathPoints(d) {
+    const re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/g;
+    const toks = [];
+    let m;
+    while ((m = re.exec(String(d == null ? '' : d))))
+      toks.push(m[1] === undefined ? parseFloat(m[2]) : m[1]);
+    const pts = [];
+    let i = 0;
+    let cmd = '';
+    let x = 0;
+    let y = 0;
+    let sx = 0;
+    let sy = 0;
+    let cx = 0;
+    let cy = 0;
+    const n = () => {
+      const v = toks[i++];
+      return typeof v === 'number' ? v : 0;
+    };
+    const move = (nx, ny) => {
+      x = nx;
+      y = ny;
+      pts.push([x, y, true]);
+    };
+    const line = (nx, ny) => {
+      x = nx;
+      y = ny;
+      pts.push([x, y, false]);
+    };
+    const cubic = (x1, y1, x2, y2, x3, y3) => {
+      const ax = x;
+      const ay = y;
+      for (let s = 1; s <= __CURVE_STEPS; s++) {
+        const t = s / __CURVE_STEPS;
+        const u = 1 - t;
+        const a = u * u * u;
+        const b = 3 * u * u * t;
+        const c = 3 * u * t * t;
+        const e = t * t * t;
+        pts.push([a * ax + b * x1 + c * x2 + e * x3, a * ay + b * y1 + c * y2 + e * y3, false]);
+      }
+      cx = x2;
+      cy = y2;
+      x = x3;
+      y = y3;
+    };
+    const quad = (x1, y1, x2, y2) => {
+      const ax = x;
+      const ay = y;
+      for (let s = 1; s <= __CURVE_STEPS; s++) {
+        const t = s / __CURVE_STEPS;
+        const u = 1 - t;
+        pts.push([
+          u * u * ax + 2 * u * t * x1 + t * t * x2,
+          u * u * ay + 2 * u * t * y1 + t * t * y2,
+          false,
+        ]);
+      }
+      cx = x1;
+      cy = y1;
+      x = x2;
+      y = y2;
+    };
+    const arc = (rx, ry, rot, large, sweep, ex, ey) => {
+      const x0 = x;
+      const y0 = y;
+      if (!rx || !ry || (x0 === ex && y0 === ey)) return line(ex, ey);
+      rx = Math.abs(rx);
+      ry = Math.abs(ry);
+      const phi = (rot * Math.PI) / 180;
+      const cosP = Math.cos(phi);
+      const sinP = Math.sin(phi);
+      const dx2 = (x0 - ex) / 2;
+      const dy2 = (y0 - ey) / 2;
+      const x1p = cosP * dx2 + sinP * dy2;
+      const y1p = -sinP * dx2 + cosP * dy2;
+      let lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+      if (lam > 1) {
+        const s = Math.sqrt(lam);
+        rx *= s;
+        ry *= s;
+      }
+      const sign = large === sweep ? -1 : 1;
+      let num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+      const den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+      if (num < 0) num = 0;
+      const co = sign * Math.sqrt(den === 0 ? 0 : num / den);
+      const cxp = (co * rx * y1p) / ry;
+      const cyp = (-co * ry * x1p) / rx;
+      const ccx = cosP * cxp - sinP * cyp + (x0 + ex) / 2;
+      const ccy = sinP * cxp + cosP * cyp + (y0 + ey) / 2;
+      const ang = (ux, uy, vx, vy) => {
+        const d = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+        let c = d === 0 ? 0 : (ux * vx + uy * vy) / d;
+        c = c > 1 ? 1 : c < -1 ? -1 : c;
+        return (ux * vy - uy * vx < 0 ? -1 : 1) * Math.acos(c);
+      };
+      const t1 = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+      let dt = ang((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+      if (!sweep && dt > 0) dt -= 2 * Math.PI;
+      else if (sweep && dt < 0) dt += 2 * Math.PI;
+      for (let s = 1; s <= __CURVE_STEPS; s++) {
+        const t = t1 + (dt * s) / __CURVE_STEPS;
+        const px2 = Math.cos(t) * rx;
+        const py2 = Math.sin(t) * ry;
+        pts.push([ccx + cosP * px2 - sinP * py2, ccy + sinP * px2 + cosP * py2, false]);
+      }
+      x = ex;
+      y = ey;
+    };
+
+    while (i < toks.length) {
+      if (typeof toks[i] === 'string') cmd = toks[i++];
+      else if (cmd === 'M') cmd = 'L';
+      else if (cmd === 'm') cmd = 'l';
+      const rel = cmd >= 'a';
+      const bx = rel ? x : 0;
+      const by = rel ? y : 0;
+      switch (cmd.toUpperCase()) {
+        case 'M':
+          move(bx + n(), by + n());
+          sx = x;
+          sy = y;
+          cx = x;
+          cy = y;
+          break;
+        case 'L':
+          line(bx + n(), by + n());
+          cx = x;
+          cy = y;
+          break;
+        case 'H':
+          line(bx + n(), y);
+          cx = x;
+          cy = y;
+          break;
+        case 'V':
+          line(x, by + n());
+          cx = x;
+          cy = y;
+          break;
+        case 'C':
+          cubic(bx + n(), by + n(), bx + n(), by + n(), bx + n(), by + n());
+          break;
+        case 'S':
+          cubic(2 * x - cx, 2 * y - cy, bx + n(), by + n(), bx + n(), by + n());
+          break;
+        case 'Q':
+          quad(bx + n(), by + n(), bx + n(), by + n());
+          break;
+        case 'T':
+          quad(2 * x - cx, 2 * y - cy, bx + n(), by + n());
+          break;
+        case 'A':
+          arc(n(), n(), n(), n(), n(), bx + n(), by + n());
+          cx = x;
+          cy = y;
+          break;
+        case 'Z':
+          line(sx, sy);
+          cx = x;
+          cy = y;
+          break;
+        default:
+          i++;
+      }
+      if (i >= toks.length) break;
+    }
+    return pts;
+  }
+
+  function __pathLength(d) {
+    const p = __pathPoints(d);
+    let total = 0;
+    for (let i = 1; i < p.length; i++) {
+      if (p[i][2]) continue;
+      total += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+    }
+    return total;
+  }
+
+  function __pathPointAt(d, want) {
+    const p = __pathPoints(d);
+    if (!p.length) return { x: 0, y: 0 };
+    let run = 0;
+    const target = Number(want) || 0;
+    for (let i = 1; i < p.length; i++) {
+      if (p[i][2]) continue;
+      const seg = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      if (run + seg >= target && seg > 0) {
+        const f = (target - run) / seg;
+        return {
+          x: p[i - 1][0] + (p[i][0] - p[i - 1][0]) * f,
+          y: p[i - 1][1] + (p[i][1] - p[i - 1][1]) * f,
+        };
+      }
+      run += seg;
+    }
+    const last = p[p.length - 1];
+    return { x: last[0], y: last[1] };
+  }
+
+  const __SVG_TAGS = {
+    svg: 'SVGSVGElement',
+    path: 'SVGPathElement',
+    rect: 'SVGRectElement',
+    circle: 'SVGCircleElement',
+    ellipse: 'SVGEllipseElement',
+    line: 'SVGLineElement',
+    polyline: 'SVGPolylineElement',
+    polygon: 'SVGPolygonElement',
+    g: 'SVGGElement',
+    text: 'SVGTextElement',
+    tspan: 'SVGTSpanElement',
+    defs: 'SVGDefsElement',
+    use: 'SVGUseElement',
+    image: 'SVGImageElement',
+    filter: 'SVGFilterElement',
+    lineargradient: 'SVGLinearGradientElement',
+    radialgradient: 'SVGRadialGradientElement',
+    stop: 'SVGStopElement',
+    clippath: 'SVGClipPathElement',
+    mask: 'SVGMaskElement',
+    marker: 'SVGMarkerElement',
+    symbol: 'SVGSymbolElement',
+    pattern: 'SVGPatternElement',
+    foreignobject: 'SVGForeignObjectElement',
+    textpath: 'SVGTextPathElement',
+    desc: 'SVGDescElement',
+    title: 'SVGTitleElement',
+  };
+
   function makeSvgElement(tag) {
     const el = makeElement(tag);
     el.tagName = String(tag);
     el.nodeName = String(tag);
     el.namespaceURI = SVG_NS;
+    const lower = String(tag).toLowerCase();
+    if (lower === 'path') {
+      el.getTotalLength = function getTotalLength() {
+        return __pathLength(this.getAttribute('d'));
+      };
+      el.getPointAtLength = function getPointAtLength(len) {
+        const p = __pathPointAt(this.getAttribute('d'), len);
+        return __tag(p, 'DOMPoint');
+      };
+    }
+
+    // SVGRect carries its numbers on the prototype, so JSON.stringify of one is
+    // `{}` - own enumerable properties would show the values instead.
+    const rect = (x, y, w, h) => {
+      const r = {};
+      const put = (k, v) =>
+        Object.defineProperty(r, k, {
+          value: v,
+          enumerable: false,
+          writable: true,
+          configurable: true,
+        });
+      put('x', x);
+      put('y', y);
+      put('width', w);
+      put('height', h);
+      return __tag(r, 'SVGRect');
+    };
+    el.getBBox = function getBBox() {
+      const pts = lower === 'path' ? __pathPoints(this.getAttribute('d')) : [];
+      if (!pts.length) return rect(0, 0, 0, 0);
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const p of pts) {
+        if (p[0] < x0) x0 = p[0];
+        if (p[0] > x1) x1 = p[0];
+        if (p[1] < y0) y0 = p[1];
+        if (p[1] > y1) y1 = p[1];
+      }
+      return rect(x0, y0, x1 - x0, y1 - y0);
+    };
+    __tag(el, __SVG_TAGS[lower] || 'SVGElement');
     el.getCTM = function () {
       return __matrixObject(__ctm(this));
     };
@@ -353,6 +888,9 @@
         },
       };
     };
+    __tag(el.classList, 'DOMTokenList');
+    __tag(el.attributes, 'NamedNodeMap');
+
     return el;
   }
 
@@ -753,7 +1291,15 @@
       height: 150,
 
       setAttribute(k, v) {
+        const had = this.attributes[k];
         this.attributes[k] = String(v);
+        try {
+          __notifyMutation(__SELF.get(this) || this, {
+            type: 'attributes',
+            attributeName: String(k),
+            oldValue: had === undefined ? null : had,
+          });
+        } catch (e) {}
         if (k === 'id') this.id = String(v);
         if (k === 'class') this.className = String(v);
         if (k === 'src') {
@@ -786,21 +1332,26 @@
       appendChild(c) {
         if (c) {
           try {
-            c.parentNode = this;
-            c.parentElement = this;
+            const owner = __SELF.get(this) || this;
+            c.parentNode = owner;
+            c.parentElement = owner;
           } catch (e) {}
         }
         this.childNodes.push(c);
         if (c && c.nodeType === 1) this.children.push(c);
         __maybeLoadScript(c);
+        try {
+          __notifyMutation(__SELF.get(this) || this, { type: 'childList', addedNodes: [c] });
+        } catch (e) {}
         return c;
       },
       insertBefore(c, ref) {
         const i = ref ? this.childNodes.indexOf(ref) : -1;
         if (c) {
           try {
-            c.parentNode = this;
-            c.parentElement = this;
+            const owner = __SELF.get(this) || this;
+            c.parentNode = owner;
+            c.parentElement = owner;
           } catch (e) {}
         }
         if (i >= 0) this.childNodes.splice(i, 0, c);
@@ -814,6 +1365,9 @@
         if (i >= 0) this.childNodes.splice(i, 1);
         const j = this.children.indexOf(c);
         if (j >= 0) this.children.splice(j, 1);
+        try {
+          __notifyMutation(__SELF.get(this) || this, { type: 'childList', removedNodes: [c] });
+        } catch (e) {}
         if (c) {
           try {
             c.parentNode = null;
@@ -829,11 +1383,25 @@
       remove() {
         if (this.parentNode) this.parentNode.removeChild(this);
       },
-      cloneNode() {
-        return makeElement(tag);
+      cloneNode(deep) {
+        const copy = makeElement(this.tagName ? this.tagName.toLowerCase() : tag);
+        try {
+          for (const name of this.getAttributeNames()) {
+            copy.setAttribute(name, this.getAttribute(name));
+          }
+        } catch (e) {}
+        if (deep) {
+          for (const kid of (this.childNodes || []).slice()) {
+            copy.appendChild(kid.cloneNode ? kid.cloneNode(true) : kid);
+          }
+        }
+        return copy;
       },
       contains(n) {
-        return this.childNodes.indexOf(n) >= 0;
+        for (let x = n, hops = 0; x && hops < 512; x = x.parentNode, hops++) {
+          if (x === this) return true;
+        }
+        return false;
       },
       hasChildNodes() {
         return this.childNodes.length > 0;
@@ -877,22 +1445,42 @@
       },
 
       // Declared arity matters: a browser's are 2, 2 and 1.
-      addEventListener(_t, _f) {
+      addEventListener(_t, _f, opts) {
         if (typeof _f !== 'function' && !(_f && typeof _f.handleEvent === 'function')) return;
         const all = this.__handlers || (this.__handlers = {});
-        (all[_t] || (all[_t] = [])).push(_f);
+        const list = all[_t] || (all[_t] = []);
+        for (const e of list) if ((e.__origin || e) === _f) return;
+        const once = opts === true ? false : !!(opts && opts.once);
+        if (!once) {
+          list.push(_f);
+          return;
+        }
+        const entry =
+          typeof _f === 'function'
+            ? function (ev) {
+                return _f.call(this, ev);
+              }
+            : { handleEvent: (ev) => _f.handleEvent(ev) };
+        entry.__once = true;
+        entry.__origin = _f;
+        list.push(entry);
       },
       removeEventListener(_t, _f) {
         const l = this.__handlers && this.__handlers[_t];
         if (!l) return;
-        const i = l.indexOf(_f);
-        if (i >= 0) l.splice(i, 1);
+        for (let i = l.length - 1; i >= 0; i--) {
+          if (l[i] === _f || l[i].__origin === _f) l.splice(i, 1);
+        }
       },
       dispatchEvent(_e) {
-        __fireOn(this, (_e && _e.type) || '', _e);
-        return true;
+        return __dispatch(__SELF.get(this) || this, _e);
       },
       get __box() {
+        if (this.tagName === 'HTML') {
+          return { width: globalThis.innerWidth || 0, height: globalThis.innerHeight || 0 };
+        }
+        const isBody = this.tagName === 'BODY';
+        const bodyWidth = () => Math.max(0, (globalThis.innerWidth || 0) - 16);
         let attached = false;
         for (let n = this; n; n = n.parentNode) {
           if (n === document.body || n === document.documentElement) {
@@ -901,7 +1489,7 @@
           }
         }
         const text = this.textContent || '';
-        if (!attached || !text) return { width: 0, height: 0 };
+        if (!attached || !text) return { width: isBody ? bodyWidth() : 0, height: 0 };
         const style = this.style || {};
         const shorthand = style.font || '';
         if (globalThis.__noteFont) {
@@ -915,7 +1503,13 @@
           (shorthand ? __fontFamilies(shorthand).families.join(',') : '') ||
           'serif';
         const m = __measure(text, size + 'px ' + family);
-        return { width: m.width, height: m.lineHeight };
+        return { width: isBody ? bodyWidth() : m.width, height: m.lineHeight };
+      },
+      get scrollWidth() {
+        return Math.round(this.__box.width);
+      },
+      get scrollHeight() {
+        return Math.round(this.__box.height);
       },
       get offsetWidth() {
         return Math.round(this.__box.width);
@@ -954,7 +1548,14 @@
         const h = __queryWithin(this, sel);
         return h.length ? h : __queryAll(sel);
       },
-      closest() {
+      closest(sel) {
+        for (
+          let n = this, hops = 0;
+          n && n.nodeType === 1 && hops < 512;
+          n = n.parentNode, hops++
+        ) {
+          if (__matches(n, sel)) return n;
+        }
         return null;
       },
       matches(sel) {
@@ -1028,12 +1629,32 @@
       requestSubmit() {
         this.submit();
       },
-      insertAdjacentHTML() {},
+      insertAdjacentHTML(where, html) {
+        const box = makeElement('div');
+        box.innerHTML = String(html);
+        const kids = (box.childNodes || []).slice();
+        const w = String(where).toLowerCase();
+        if (w === 'afterbegin') {
+          for (let i = kids.length - 1; i >= 0; i--) {
+            this.insertBefore(kids[i], this.childNodes[0] || null);
+          }
+        } else if (w === 'beforeend') {
+          for (const k of kids) this.appendChild(k);
+        } else if (this.parentNode) {
+          const at = this.parentNode.childNodes.indexOf(this);
+          const anchor = w === 'beforebegin' ? this : this.parentNode.childNodes[at + 1] || null;
+          for (const k of kids) this.parentNode.insertBefore(k, anchor);
+        }
+      },
       insertAdjacentElement(_, e) {
         return e;
       },
       get innerHTML() {
-        return this.__html || '';
+        try {
+          return __serializeChildren(__SELF.get(this) || this);
+        } catch (e) {
+          return this.__html || '';
+        }
       },
       set innerHTML(html) {
         this.__html = String(html);
@@ -1043,8 +1664,8 @@
           for (const child of __parseHtml(this.__html)) this.appendChild(child);
         } catch (e) {}
       },
-      getContext(type) {
-        return __makeContext(this, String(type));
+      getContext(type, attrs) {
+        return __makeContext(this, String(type), attrs);
       },
       transferControlToOffscreen() {
         return new globalThis.OffscreenCanvas(this.width || 300, this.height || 150);
@@ -1070,6 +1691,81 @@
       const ctorName = __TAG_CTOR[T] || 'HTMLElement';
       const ctor = __G0[ctorName] || __G0.HTMLElement;
       if (ctor && ctor.prototype) Object.setPrototypeOf(el, ctor.prototype);
+    } catch (e) {}
+    __tag(el.classList, 'DOMTokenList');
+    __tag(el.attributes, 'NamedNodeMap');
+    try {
+      // `dataset` read from its own empty target and never looked at the
+      // element, `textContent` was a fixed empty string, and
+      // `childElementCount` was a profile stand-in.
+      const self = () => __SELF.get(el) || el;
+      const dashed = (k) => 'data-' + String(k).replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+      Object.defineProperty(el, 'dataset', {
+        value: new Proxy(
+          {},
+          {
+            get(t, k) {
+              if (typeof k === 'symbol') return Reflect.get(t, k);
+              const v = self().getAttribute(dashed(k));
+              return v === null ? undefined : v;
+            },
+            set(t, k, v) {
+              self().setAttribute(dashed(k), String(v));
+              return true;
+            },
+            has(t, k) {
+              return typeof k === 'symbol' ? Reflect.has(t, k) : self().hasAttribute(dashed(k));
+            },
+            deleteProperty(t, k) {
+              self().removeAttribute(dashed(k));
+              return true;
+            },
+            ownKeys() {
+              return self()
+                .getAttributeNames()
+                .filter((n) => n.indexOf('data-') === 0)
+                .map((n) => n.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase()));
+            },
+            getOwnPropertyDescriptor(t, k) {
+              if (typeof k === 'symbol') return Reflect.getOwnPropertyDescriptor(t, k);
+              const v = self().getAttribute(dashed(k));
+              if (v === null) return undefined;
+              return { value: v, writable: true, enumerable: true, configurable: true };
+            },
+          },
+        ),
+        enumerable: true,
+        configurable: true,
+      });
+      const textOf = (n) => {
+        if (!n) return '';
+        if (n.nodeType === 3)
+          return String(n.nodeValue === undefined ? n.textContent : n.nodeValue);
+        let out = '';
+        for (const k of n.childNodes || []) out += textOf(k);
+        return out;
+      };
+      Object.defineProperty(el, 'textContent', {
+        get() {
+          return textOf(self());
+        },
+        set(v) {
+          const me = self();
+          me.childNodes = [];
+          me.children = [];
+          me.__html = '';
+          if (String(v)) me.appendChild(globalThis.document.createTextNode(String(v)));
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperty(el, 'childElementCount', {
+        get() {
+          return (self().children || []).length;
+        },
+        enumerable: true,
+        configurable: true,
+      });
     } catch (e) {}
 
     // Assigning the property is how a frame is navigated; setAttribute is the
@@ -1142,9 +1838,55 @@
     } catch (e) {}
 
     const wrapped = __watch('el<' + tag + '>', el);
+    try {
+      __SELF.set(el, wrapped);
+    } catch (e) {}
     (globalThis.__ELEMENTS || (globalThis.__ELEMENTS = [])).push(wrapped);
     return wrapped;
   }
+  const __VOID_TAGS = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+  ]);
+  const __escapeText = (t) =>
+    String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const __escapeAttr = (t) => String(t).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  function __serializeNode(n) {
+    if (!n) return '';
+    if (n.nodeType === 3) {
+      return __escapeText(n.nodeValue === undefined ? n.textContent : n.nodeValue);
+    }
+    if (n.nodeType === 8) return '<!--' + String(n.nodeValue || '') + '-->';
+    if (n.nodeType !== 1) return '';
+    const tag = String(n.tagName || 'div').toLowerCase();
+    let out = '<' + tag;
+    try {
+      for (const name of n.getAttributeNames()) {
+        out += ' ' + name + '="' + __escapeAttr(n.getAttribute(name)) + '"';
+      }
+    } catch (e) {}
+    out += '>';
+    if (__VOID_TAGS.has(tag)) return out;
+    return out + __serializeChildren(n) + '</' + tag + '>';
+  }
+  function __serializeChildren(n) {
+    let out = '';
+    for (const k of (n && n.childNodes) || []) out += __serializeNode(k);
+    return out;
+  }
+
   globalThis.__parseHtml = function __parseHtml(html) {
     const roots = [];
     const stack = [];
@@ -1160,9 +1902,9 @@
     while ((m = re.exec(html)) !== null) {
       const text = html.slice(last, m.index);
       if (text.trim() && stack.length) {
-        try {
-          stack[stack.length - 1].textContent += text;
-        } catch (e) {}
+        // The text node is the content. Assigning textContent as well used to be
+        // harmless because it was a plain string; now that it is derived from
+        // the children it replaces them, and the node below added a second copy.
         try {
           put(document.createTextNode(text));
         } catch (e) {}
@@ -1233,6 +1975,21 @@
       return sheets;
     },
     readyState: 'loading',
+    getAnimations() {
+      return [];
+    },
+    timeline: {
+      get currentTime() {
+        try {
+          return globalThis.performance.now();
+        } catch (e) {
+          return 0;
+        }
+      },
+      get duration() {
+        return null;
+      },
+    },
     visibilityState: 'visible',
     hidden: false,
     characterSet: 'UTF-8',
@@ -1315,6 +2072,76 @@
     },
     title: 'Just a moment...',
     createElement: (t) => makeElement(t),
+    // `document.createRange()` did not exist, so anything that measured a text
+    // run or read a selection threw on the first call.
+    createRange: () => {
+      const r = {
+        startContainer: null,
+        startOffset: 0,
+        endContainer: null,
+        endOffset: 0,
+        collapsed: true,
+        commonAncestorContainer: null,
+        setStart(n, off) {
+          this.startContainer = n;
+          this.startOffset = off | 0;
+          this.collapsed =
+            this.startContainer === this.endContainer && this.startOffset === this.endOffset;
+        },
+        setEnd(n, off) {
+          this.endContainer = n;
+          this.endOffset = off | 0;
+          this.collapsed =
+            this.startContainer === this.endContainer && this.startOffset === this.endOffset;
+        },
+        selectNode(n) {
+          this.startContainer = n && n.parentNode;
+          this.endContainer = n && n.parentNode;
+          this.commonAncestorContainer = n && n.parentNode;
+          this.collapsed = false;
+        },
+        selectNodeContents(n) {
+          this.startContainer = n;
+          this.endContainer = n;
+          this.commonAncestorContainer = n;
+          this.startOffset = 0;
+          this.endOffset = (n && n.childNodes && n.childNodes.length) || 0;
+          this.collapsed = this.endOffset === 0;
+        },
+        collapse(toStart) {
+          if (toStart) this.endContainer = this.startContainer;
+          else this.startContainer = this.endContainer;
+          this.collapsed = true;
+        },
+        cloneRange() {
+          return globalThis.document.createRange();
+        },
+        detach() {},
+        toString() {
+          const n = this.commonAncestorContainer;
+          return n && n.textContent ? String(n.textContent) : '';
+        },
+        getBoundingClientRect() {
+          const n = this.commonAncestorContainer;
+          return n && n.getBoundingClientRect
+            ? n.getBoundingClientRect()
+            : { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+        },
+        getClientRects() {
+          return [];
+        },
+        createContextualFragment(html) {
+          const box = makeElement('div');
+          box.innerHTML = String(html);
+          return box;
+        },
+      };
+      try {
+        const C = globalThis.Range;
+        if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(r, C.prototype);
+      } catch (e) {}
+      return r;
+    },
     createElementNS: (ns, t) => (ns === SVG_NS ? makeSvgElement(t) : makeElement(t)),
     createTextNode: (t) => {
       const value = String(t);
@@ -1339,7 +2166,7 @@
       const all = globalThis.__ELEMENTS || [];
       for (let i = 0; i < all.length; i++) {
         try {
-          if (all[i].id === id) return all[i];
+          if (all[i].id === id && __inDocument(all[i])) return all[i];
         } catch (e) {}
       }
       return null;
@@ -1348,7 +2175,10 @@
       t = String(t).toLowerCase();
       if (t === 'head') return [head];
       if (t === 'body') return [body];
-      if (t === '*') return (globalThis.__ELEMENTS || []).slice();
+      // The registry holds every element ever created, so returning it whole
+      // counted the ones a page built and never attached: 103 against a
+      // browser's 11 on the same document.
+      if (t === '*') return (globalThis.__ELEMENTS || []).filter((el) => __inDocument(el));
       return __queryAll(t);
     },
     // A live view of the document's script tags, which is how a collector that
@@ -1361,20 +2191,17 @@
       if (!want.length) return [];
       return (globalThis.__ELEMENTS || []).filter((el) => {
         try {
-          return want.every((w) => el.classList && el.classList.contains(w));
+          return want.every((w) => el.classList && el.classList.contains(w)) && __inDocument(el);
         } catch (e) {
           return false;
         }
       });
     },
-    // Resolved against the document. querySelector keeps a registry fallback so a
-    // challenge looking up its own tag gets an object rather than null.
     querySelector: (sel) => {
       const found = __queryAll(sel);
       if (found.length) return found[0];
-      return (document.__registry[sel] ||= makeElement(
-        /^[a-z0-9]+$/i.test(String(sel)) ? String(sel) : 'div',
-      ));
+      if (!/^[a-z0-9]+$/i.test(String(sel))) return null;
+      return (document.__registry[sel] ||= makeElement(String(sel)));
     },
     querySelectorAll: (sel) => __queryAll(sel),
     hasFocus: () => true,

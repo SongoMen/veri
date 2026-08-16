@@ -8,4 +8,4 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-veri-core = { path = "../veri-core", version = "0.1.0" }
+veri-core = { path = "../veri-core", version = "0.2.0" }

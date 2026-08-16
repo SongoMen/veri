@@ -49,8 +49,14 @@ export interface RequestOptions {
   url?: string;
   headers?: Record<string, ParamValue | ParamValue[]>;
   query?: Record<string, ParamValue | ParamValue[]>;
-  json?: unknown;
-  body?: string;
+  /**
+   * The request body, whatever you have. A string is sent byte for byte with no
+   * content type added; a Buffer, TypedArray or ArrayBuffer is sent as bytes;
+   * anything else is serialised as JSON and gets `application/json`. A content
+   * type you set yourself always wins. Streams are not accepted, the daemon
+   * needs the whole request up front.
+   */
+  body?: unknown;
   /** Override the client's timeout for this request only. */
   timeoutMs?: number;
 }

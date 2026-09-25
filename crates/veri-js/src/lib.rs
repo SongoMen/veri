@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use veri_core::{HttpBridge, SolveError, SolveReport, Solver};
-use vm::SolveOptions;
+use vm::{SolveOptions, StopWhen};
 
 #[derive(Debug, Clone, Default)]
 pub struct V8Solver {
@@ -72,7 +72,12 @@ impl V8Solver {
     }
 
     pub fn stopping_at(mut self, cookie: impl Into<String>) -> Self {
-        self.options.stop_when_cookie = Some(cookie.into());
+        self.options.stop = StopWhen::Cookie(cookie.into());
+        self
+    }
+
+    pub fn stop_after_post(mut self, min_body: usize) -> Self {
+        self.options.stop = StopWhen::Posted { min_body };
         self
     }
 

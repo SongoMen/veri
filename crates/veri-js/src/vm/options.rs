@@ -6,6 +6,14 @@ use std::time::Duration;
 pub const DEFAULT_HEAP_MB: usize = 128;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90);
 
+#[derive(Debug, Clone, Default)]
+pub enum StopWhen {
+    #[default]
+    Idle,
+    Cookie(String),
+    Posted { min_body: usize },
+}
+
 #[derive(Debug, Clone)]
 pub struct SolveOptions {
     /// Record every property access and capture decoded sources. Roughly 6x
@@ -24,7 +32,7 @@ pub struct SolveOptions {
     pub frames: bool,
     pub capture_dir: Option<PathBuf>,
     pub trace_catch: bool,
-    pub stop_when_cookie: Option<String>,
+    pub stop: StopWhen,
 }
 
 impl Default for SolveOptions {
@@ -39,7 +47,7 @@ impl Default for SolveOptions {
             frames: false,
             capture_dir: None,
             trace_catch: false,
-            stop_when_cookie: None,
+            stop: StopWhen::Idle,
         }
     }
 }

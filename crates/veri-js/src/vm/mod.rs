@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod env;
 pub mod extract;
 mod frames;
+mod inspect;
 pub mod lifecycle;
 pub mod options;
 pub mod watchdog;
@@ -14,7 +15,7 @@ pub use extract::{
     all_elements, config_field, extract_config_object, extract_inline_script_at,
     first_inline_script_at, instrument_catches, scripts, Script,
 };
-pub use options::{SolveOptions, DEFAULT_HEAP_MB, DEFAULT_TIMEOUT};
+pub use options::{SolveOptions, StopWhen, DEFAULT_HEAP_MB, DEFAULT_TIMEOUT};
 
 use lifecycle::{drive_to_complete, eval, eval_json, run, run_at};
 use serde::{Deserialize, Serialize};
@@ -133,6 +134,15 @@ pub fn execute(
     let misses = diagnostics::MissGuard::install();
 
     let mut isolate = env::new_isolate(options);
+
+    let insp_sink = Arc::new(std::sync::Mutex::new(inspect::Sink::default()));
+    let mut insp_client = inspect::Client::new();
+    let mut inspector = if inspect::enabled() {
+        Some(v8::inspector::V8Inspector::create(&mut isolate, &mut insp_client))
+    } else {
+        None
+    };
+
     // Armed before any challenge code runs, and joined before the isolate drops.
     let mut dog = options.timeout.map(|d| watchdog::Watchdog::arm(isolate.thread_safe_handle(), d));
 
@@ -151,6 +161,54 @@ pub fn execute(
             v8::ContextOptions { global_template: Some(global_tmpl), ..Default::default() },
         );
         let scope = &mut v8::ContextScope::new(hs, context);
+
+        let mut insp_channel = inspect::Channel::new(insp_sink.clone());
+        let mut _insp_session = None;
+        if let Some(insp) = inspector.as_mut() {
+            let empty: &[u8] = b"";
+            insp.context_created(
+                context,
+                1,
+                v8::inspector::StringView::from(empty),
+                v8::inspector::StringView::from(empty),
+            );
+            let state: &[u8] = b"{}";
+            let mut session = insp.connect(
+                1,
+                &mut insp_channel,
+                v8::inspector::StringView::from(state),
+                v8::inspector::V8InspectorClientTrustLevel::Untrusted,
+            );
+            inspect::dispatch(&mut session, r#"{"id":1,"method":"Debugger.enable"}"#);
+            // VERI_INSPECT_EXC captures caught+uncaught throws without pausing:
+            // the default run_message_loop_on_pause is a no-op, so V8 fires the
+            // Debugger.paused notification (with the exception + call frames) and
+            // resumes. Used to find which collector returns an error-fallback.
+            if std::env::var("VERI_INSPECT_EXC").is_ok() {
+                inspect::dispatch(
+                    &mut session,
+                    r#"{"id":40,"method":"Debugger.setPauseOnExceptions","params":{"state":"all"}}"#,
+                );
+            }
+            if let Ok(spec) = std::env::var("VERI_INSPECT_BP") {
+                // One or more breakpoints, "@@@"-separated; each is "line:col:condition".
+                for (i, one) in spec.split("@@@").enumerate() {
+                    let mut parts = one.splitn(3, ':');
+                    let line: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+                    let col: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+                    let cond = parts.next().unwrap_or("");
+                    let msg = serde_json::json!({
+                        "id": 2 + i as i64,
+                        "method": "Debugger.setBreakpointByUrl",
+                        "params": {"lineNumber": line, "columnNumber": col, "url": "veri://sensor", "condition": cond}
+                    })
+                    .to_string();
+                    inspect::dispatch(&mut session, &msg);
+                    eprintln!("[inspect] setBP line={line} col={col} cond={cond}");
+                }
+            }
+            _insp_session = Some(session);
+        }
 
         bind(scope, context, "__HOST_RUN", bridge::host_run)?;
         if options.frames {
@@ -225,7 +283,87 @@ pub fn execute(
             }
         }
 
-        drive_to_complete(scope, options.stop_when_cookie.as_deref());
+        drive_to_complete(scope, &options.stop);
+
+        if inspect::enabled() {
+            let cap = eval(scope, "String(globalThis.__cap028)");
+            eprintln!("[inspect] __cap028 = {cap}");
+            let sink = insp_sink.lock().unwrap();
+            eprintln!(
+                "[inspect] notifications={} responses={}",
+                sink.notifications.len(),
+                sink.responses.len()
+            );
+            if std::env::var("VERI_INSPECT_EXC").is_ok() {
+                let mut nexc = 0;
+                for n in &sink.notifications {
+                    if !n.contains("\"method\":\"Debugger.paused\"") {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(n) {
+                        let p = &v["params"];
+                        let reason = p["reason"].as_str().unwrap_or("");
+                        if reason != "exception" && reason != "promiseRejection" {
+                            continue;
+                        }
+                        nexc += 1;
+                        let desc = p["data"]["description"]
+                            .as_str()
+                            .or_else(|| p["data"]["value"].as_str())
+                            .unwrap_or("<no desc>");
+                        let desc1 = desc.lines().next().unwrap_or(desc);
+                        let mut frames = String::new();
+                        if let Some(cf) = p["callFrames"].as_array() {
+                            for f in cf.iter().take(4) {
+                                let fname = f["functionName"].as_str().unwrap_or("?");
+                                let loc = &f["location"];
+                                let ln = loc["lineNumber"].as_i64().unwrap_or(-1);
+                                let cl = loc["columnNumber"].as_i64().unwrap_or(-1);
+                                let url = f["url"].as_str().unwrap_or("");
+                                let short = url.rsplit('/').next().unwrap_or(url);
+                                frames.push_str(&format!("  <{fname}@{short}:{ln}:{cl}>"));
+                            }
+                        }
+                        if !frames.contains("tagPlatform") && nexc <= 5000 {
+                            eprintln!("[exc {nexc}] {desc1}{frames}");
+                        }
+                        if frames.contains("n80") || frames.contains("Bx") {
+                            eprintln!("[exc-full {nexc}] data={}", p["data"]);
+                        }
+                    }
+                }
+                eprintln!("[inspect] total exceptions captured={nexc}");
+            }
+            for r in &sink.responses {
+                eprintln!("[inspect] resp: {}", &r[..r.len().min(400)]);
+            }
+            let mut biggest = (0usize, String::new());
+            for n in &sink.notifications {
+                if n.contains("breakpointResolved") {
+                    eprintln!("[inspect] {}", &n[..n.len().min(300)]);
+                }
+                if n.contains("scriptParsed") && n.contains("veri://run") {
+                    if let Some(idx) = n.find("\"endColumn\"") {
+                        let tail = &n[idx..n.len().min(idx + 40)];
+                        if tail.len() > biggest.0 {
+                            biggest = (tail.len(), n[..n.len().min(500)].to_string());
+                        }
+                    }
+                }
+            }
+            let runs: Vec<&String> = sink
+                .notifications
+                .iter()
+                .filter(|n| n.contains("scriptParsed") && n.contains("veri://run"))
+                .collect();
+            eprintln!("[inspect] veri://run scriptParsed count={}", runs.len());
+            for n in runs.iter().take(6) {
+                let ec = n.find("\"endColumn\"").map(|i| &n[i..n.len().min(i + 30)]).unwrap_or("");
+                let el = n.find("\"endLine\"").map(|i| &n[i..n.len().min(i + 25)]).unwrap_or("");
+                eprintln!("[inspect]   {el} {ec}");
+            }
+        }
+
         read_back(scope, &mut out);
 
         if options.diagnostics {

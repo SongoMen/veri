@@ -10,7 +10,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 
 const platform = process.platform;
 const arch = process.arch;
-const name = `veri-http-${platform}-${arch}`;
+const platformTag = platform === 'win32' ? 'windows' : platform;
+const name = `veri-http-${platformTag}-${arch}`;
 const exe = platform === 'win32' ? 'veri-daemon.exe' : 'veri-daemon';
 
 if (!process.argv.includes('--no-build')) {

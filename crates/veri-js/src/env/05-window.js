@@ -77,13 +77,16 @@
       return mc;
     })(),
   };
-  const __GREASE_BRAND = (function () {
+  const __GREASE = (function () {
     try {
       const b = globalThis.__PROFILE.navigator.userAgentData.brands;
-      for (const x of b) if (!/Chrome|Chromium/i.test(x.brand)) return x.brand;
+      for (const x of b)
+        if (!/Chrome|Chromium/i.test(x.brand))
+          return { brand: x.brand, version: String(x.version) };
     } catch (e) {}
-    return 'Not=A?Brand';
+    return { brand: 'Not=A?Brand', version: '99' };
   })();
+  const __GREASE_BRAND = __GREASE.brand;
 
   (function () {
     const v = /Chrome\/(\d+)/.exec(__IDENTITY.ua);
@@ -92,7 +95,7 @@
         // GREASE brand taken from the harvested profile: Chrome varies the
         // string by version, and inventing one is a mismatch a comparison finds.
         brands: [
-          { brand: __GREASE_BRAND, version: '99' },
+          { brand: __GREASE_BRAND, version: __GREASE.version },
           { brand: 'Google Chrome', version: v[1] },
           { brand: 'Chromium', version: v[1] },
         ],
@@ -123,12 +126,12 @@
             formFactors: U.formFactors || ['Desktop'],
             uaFullVersion: full,
             brands: [
-              { brand: __GREASE_BRAND, version: '99' },
+              { brand: __GREASE_BRAND, version: __GREASE.version },
               { brand: 'Google Chrome', version: v[1] },
               { brand: 'Chromium', version: v[1] },
             ],
             fullVersionList: [
-              { brand: __GREASE_BRAND, version: '99.0.0.0' },
+              { brand: __GREASE_BRAND, version: __GREASE.version + '.0.0.0' },
               { brand: 'Google Chrome', version: full },
               { brand: 'Chromium', version: full },
             ],
@@ -151,7 +154,11 @@
     availTop: __IDENTITY.availTop,
     colorDepth: __IDENTITY.colorDepth,
     pixelDepth: __IDENTITY.colorDepth,
-    orientation: { angle: 0, type: 'landscape-primary' },
+    // A boolean on a single-monitor setup; the filler would otherwise stand it
+    // in with an empty function, which a fingerprint reads as `function () {}`.
+    isExtended: false,
+    onchange: null,
+    orientation: { angle: 0, type: 'landscape-primary', onchange: null },
   };
 
   const __applyHistoryUrl = (url) => {
@@ -302,15 +309,20 @@
       const M =
         (globalThis.__PROFILE && globalThis.__PROFILE.misc && globalThis.__PROFILE.misc.memory) ||
         {};
-      const total = M.totalJSHeapSize || 2102155;
-      const used = M.usedJSHeapSize || 1303703;
+      let total = M.totalJSHeapSize || 12600000;
+      let used = M.usedJSHeapSize || 8000000;
+      if (total > 40000000) total = 12600000;
+      if (used > 40000000) used = 8000000;
+      total += Math.floor(Math.random() * 65536);
+      used += Math.floor(Math.random() * 65536);
+      if (used >= total) used = total - 1 - Math.floor(Math.random() * 4096);
       return {
         jsHeapSizeLimit: M.jsHeapSizeLimit || 4395630592,
         get totalJSHeapSize() {
-          return total + (((Date.now() / 1000) | 0) % 400000);
+          return total;
         },
         get usedJSHeapSize() {
-          return used + (((Date.now() / 1000) | 0) % 300000);
+          return used;
         },
       };
     })(),
@@ -421,7 +433,23 @@
   };
   globalThis.outerWidth = __IDENTITY.screenW;
   globalThis.outerHeight = __IDENTITY.screenH - 38;
-  globalThis.devicePixelRatio = __IDENTITY.dpr;
+  try {
+    const __dprDesc = Object.getOwnPropertyDescriptor(
+      {
+        get devicePixelRatio() {
+          return __IDENTITY.dpr;
+        },
+      },
+      'devicePixelRatio',
+    );
+    Object.defineProperty(globalThis, 'devicePixelRatio', {
+      get: __dprDesc.get,
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (e) {
+    globalThis.devicePixelRatio = __IDENTITY.dpr;
+  }
   globalThis.screenX = 0;
   globalThis.screenY = 38;
   globalThis.pageXOffset = 0;
@@ -465,8 +493,17 @@
   globalThis.removeEventListener = function (t, f) {
     __listenerFactory('window').remove(t, f);
   };
-  globalThis.dispatchEvent = function () {
-    return true;
+  globalThis.dispatchEvent = function (event) {
+    if (!event) return true;
+    const type = String(event.type || '');
+    if (!type) return true;
+    try {
+      globalThis.__defineOwn(event, 'target', globalThis.window);
+      globalThis.__defineOwn(event, 'currentTarget', globalThis.window);
+      globalThis.__defineOwn(event, 'eventPhase', 2);
+    } catch (e) {}
+    __fire('window', type, event);
+    return !event.defaultPrevented;
   };
   globalThis.__NOW = 0;
   globalThis.__TIMER_SEQ = 0;
@@ -549,9 +586,6 @@
     let due = Infinity;
     for (const t of __TIMERS) if (t.at < due) due = t.at;
     const elapsed = Date.now() - __T0;
-    // Not yet its turn. The test is how far ahead the clock would land, not how
-    // far away the timer is: firing whatever sits beyond the cap is what a long
-    // wait needs least, and it drags the whole clock forward to meet it.
     if (due > elapsed + AHEAD_CAP_MS) return -1;
     __NOW = Math.max(__NOW, due, elapsed);
     const batch = [];
@@ -576,7 +610,17 @@
   };
 
   globalThis.atob = function (s) {
-    const bytes = globalThis.__unb64(String(s));
+    let t = String(s).replace(/[ \t\n\f\r]/g, '');
+    if (t.length % 4 === 0) t = t.replace(/={1,2}$/, '');
+    const bad = () => {
+      throw new (globalThis.DOMException || Error)(
+        "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.",
+        'InvalidCharacterError',
+      );
+    };
+    if (t.length % 4 === 1) bad();
+    if (/[^A-Za-z0-9+/]/.test(t)) bad();
+    const bytes = globalThis.__unb64(t);
     let out = '';
     for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
     return out;
@@ -585,7 +629,16 @@
   globalThis.btoa = function (s) {
     s = String(s);
     const bytes = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c > 0xff) {
+        throw new (globalThis.DOMException || Error)(
+          "Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.",
+          'InvalidCharacterError',
+        );
+      }
+      bytes[i] = c;
+    }
     return globalThis.__b64(bytes);
   };
 
@@ -735,6 +788,15 @@
       }
     };
   };
+  try {
+    Object.defineProperty(globalThis.XMLHttpRequest, 'name', {
+      value: 'XMLHttpRequest',
+      configurable: true,
+    });
+  } catch (e) {}
+  (globalThis.__NATIVE_PENDING || (globalThis.__NATIVE_PENDING = [])).push(
+    globalThis.XMLHttpRequest,
+  );
   // The page's own headers, as pairs the bridge can send.
   globalThis.__headerPairs = function (h) {
     const out = [];
@@ -756,6 +818,9 @@
   globalThis.fetch = function (u, opts) {
     const method = opts && opts.method ? String(opts.method).toUpperCase() : 'GET';
     const body = opts && opts.body != null ? __encodeBody(opts.body) : '';
+    if (/^(chrome-extension|moz-extension|safari-web-extension|chrome|edge):\/\//i.test(String(u))) {
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
     __NET.push({ kind: 'fetch', url: String(u), method, body: body || null });
 
     if (typeof __HOST_FETCH !== 'function') {
@@ -826,7 +891,7 @@
     });
   };
 
-  globalThis.navigator.sendBeacon = function (u, b) {
+  globalThis.navigator.sendBeacon = function sendBeacon(u, b) {
     const body = b != null ? String(b) : '';
     __NET.push({ kind: 'beacon', url: String(u), body: body || null });
     if (typeof __HOST_FETCH !== 'function') return false;
@@ -841,7 +906,14 @@
   globalThis.crypto = __watch('crypto', {
     subtle: __SUBTLE,
     getRandomValues(a) {
-      for (let i = 0; i < a.length; i++) a[i] = (Math.random() * 256) | 0;
+      if (a && a.BYTES_PER_ELEMENT === 8) {
+        for (let i = 0; i < a.length; i++)
+          a[i] =
+            (BigInt((Math.random() * 4294967296) >>> 0) << 32n) |
+            BigInt((Math.random() * 4294967296) >>> 0);
+        return a;
+      }
+      for (let i = 0; i < a.length; i++) a[i] = (Math.random() * 4294967296) >>> 0;
       return a;
     },
     randomUUID() {
@@ -1002,12 +1074,18 @@
           const dur = 12.7;
           const size = n.__size || 0;
           return {
-            name: String(n.url),
+            name: __toAbsolute(n.url),
             entryType: 'resource',
             startTime: start,
             duration: dur,
             initiatorType:
-              n.kind === 'xhr' ? 'xmlhttprequest' : n.kind === 'beacon' ? 'beacon' : 'fetch',
+              n.kind === 'script'
+                ? 'script'
+                : n.kind === 'xhr'
+                  ? 'xmlhttprequest'
+                  : n.kind === 'beacon'
+                    ? 'beacon'
+                    : 'fetch',
             nextHopProtocol: 'h2',
             renderBlockingStatus: 'non-blocking',
             workerStart: 0,
@@ -1046,6 +1124,59 @@
       } catch (err) {}
       return [e];
     };
+    const __marks = [];
+    const __brandEntry = (e) => {
+      try {
+        const C = globalThis.PerformanceEntry;
+        if (typeof C === 'function' && C.prototype) Object.setPrototypeOf(e, C.prototype);
+      } catch (err) {}
+      return e;
+    };
+    const __findMarkStart = (m) => {
+      if (m == null) return 0;
+      for (let i = __marks.length - 1; i >= 0; i--) {
+        if (__marks[i].entryType === 'mark' && __marks[i].name === String(m)) return __marks[i].startTime;
+      }
+      return 0;
+    };
+    globalThis.performance.mark = function mark(name) {
+      return (
+        __marks.push(
+          __brandEntry({
+            name: String(name),
+            entryType: 'mark',
+            startTime: globalThis.performance.now(),
+            duration: 0,
+          }),
+        ),
+        __marks[__marks.length - 1]
+      );
+    };
+    globalThis.performance.measure = function measure(name, startMark, endMark) {
+      const start = __findMarkStart(startMark);
+      const end = endMark != null ? __findMarkStart(endMark) : globalThis.performance.now();
+      return (
+        __marks.push(
+          __brandEntry({
+            name: String(name),
+            entryType: 'measure',
+            startTime: start,
+            duration: Math.max(0, end - start),
+          }),
+        ),
+        __marks[__marks.length - 1]
+      );
+    };
+    globalThis.performance.clearMarks = function (name) {
+      for (let i = __marks.length - 1; i >= 0; i--) {
+        if (__marks[i].entryType === 'mark' && (name == null || __marks[i].name === String(name))) __marks.splice(i, 1);
+      }
+    };
+    globalThis.performance.clearMeasures = function (name) {
+      for (let i = __marks.length - 1; i >= 0; i--) {
+        if (__marks[i].entryType === 'measure' && (name == null || __marks[i].name === String(name))) __marks.splice(i, 1);
+      }
+    };
     globalThis.performance.getEntriesByType = (t) => {
       if (t === 'navigation') {
         const n = build();
@@ -1054,11 +1185,13 @@
       if (t === 'paint') return paint();
       if (t === 'resource') return resources();
       if (t === 'visibility-state') return visibility();
+      if (t === 'mark') return __marks.filter((e) => e.entryType === 'mark');
+      if (t === 'measure') return __marks.filter((e) => e.entryType === 'measure');
       return [];
     };
     globalThis.performance.getEntries = () => {
       const n = build();
-      return (n ? [n] : []).concat(paint()).concat(resources()).concat(visibility());
+      return (n ? [n] : []).concat(paint()).concat(resources()).concat(visibility()).concat(__marks);
     };
     globalThis.performance.getEntriesByName = (name, t) =>
       globalThis.performance
@@ -1066,10 +1199,33 @@
         .filter((e) => e.name === name && (!t || e.entryType === t));
   })();
 
+  const __perfObserverList = (entries) => ({
+    getEntries: () => entries.slice(),
+    getEntriesByType: (t) => entries.filter((e) => e.entryType === t),
+    getEntriesByName: (n, t) =>
+      entries.filter((e) => e.name === n && (t === undefined || e.entryType === t)),
+  });
   globalThis.PerformanceObserver = function PerformanceObserver(cb) {
     this._cb = cb;
-    this.observe = function () {
+    const self = this;
+    this.observe = function (opts) {
       __rec('call', 'PerformanceObserver.observe', 1);
+      opts = opts || {};
+      const types = opts.entryTypes || (opts.type ? [opts.type] : []);
+      let entries = [];
+      for (const t of types) {
+        try {
+          entries = entries.concat(globalThis.performance.getEntriesByType(t) || []);
+        } catch (e) {}
+      }
+      if (entries.length) {
+        const list = __perfObserverList(entries);
+        setTimeout(function () {
+          try {
+            cb.call(self, list, self);
+          } catch (e) {}
+        }, 0);
+      }
     };
     this.disconnect = function () {};
     this.takeRecords = function () {

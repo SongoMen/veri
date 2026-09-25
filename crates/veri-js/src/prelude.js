@@ -115,6 +115,32 @@
     // `window` is one of these, and it wraps the global directly, so it needs the
     // same blind spot for this environment's own names as __GLOBAL_PROXY has.
     const isGlobal = real === globalThis;
+    const isElem = typeof name === 'string' && name.charCodeAt(0) === 101 && name.slice(0, 3) === 'el<';
+    const hiddenFor = (t) => {
+      if (!isElem) return null;
+      let s = __ELEM_HIDDEN.get(t);
+      if (s) return s;
+      const protoNames = new Set();
+      try {
+        let p = Object.getPrototypeOf(t);
+        while (p && p !== Object.prototype) {
+          for (const n of Object.getOwnPropertyNames(p)) protoNames.add(n);
+          p = Object.getPrototypeOf(p);
+        }
+      } catch (e) {}
+      // Prototype not populated yet: do not cache, so a later call recomputes.
+      if (protoNames.size === 0) return null;
+      s = new Set();
+      try {
+        for (const k of Object.getOwnPropertyNames(t)) {
+          if (typeof k !== 'string' || !protoNames.has(k)) continue;
+          const d = Object.getOwnPropertyDescriptor(t, k);
+          if (d && d.configurable) s.add(k);
+        }
+      } catch (e) {}
+      __ELEM_HIDDEN.set(t, s);
+      return s;
+    };
     return new Proxy(real, {
       get(t, k) {
         if (typeof k === 'symbol') return Reflect.get(t, k);
@@ -137,14 +163,21 @@
       },
       ownKeys(t) {
         const keys = Reflect.ownKeys(t);
-        return isGlobal ? keys.filter((k) => !internal(t, k)) : keys;
+        if (isGlobal) return keys.filter((k) => !hiddenFromOwnKeys(t, k));
+        const hide = hiddenFor(t);
+        return hide && hide.size ? keys.filter((k) => !hide.has(k)) : keys;
       },
       getOwnPropertyDescriptor(t, k) {
         if (isGlobal && internal(t, k)) return undefined;
+        if (isElem && typeof k === 'string') {
+          const hide = hiddenFor(t);
+          if (hide && hide.has(k)) return undefined;
+        }
         return Reflect.getOwnPropertyDescriptor(t, k);
       },
     });
   }
+  const __ELEM_HIDDEN = new WeakMap();
   globalThis.__watch = watch;
 
   // prettier-ignore
@@ -187,6 +220,12 @@
     return !d || d.configurable === true;
   }
 
+  function hiddenFromOwnKeys(t, k) {
+    if (typeof k !== 'string' || !(INTERNAL.has(k) || k.startsWith('__'))) return false;
+    const d = Reflect.getOwnPropertyDescriptor(t, k);
+    return !d || d.configurable === true;
+  }
+
   globalThis.__GLOBAL_PROXY = new Proxy(globalThis, {
     has(t, k) {
       if (typeof k === 'string' && isAbsent(k)) {
@@ -223,7 +262,7 @@
       return Reflect.set(t, k, v);
     },
     ownKeys(t) {
-      return Reflect.ownKeys(t).filter((k) => !internal(t, k));
+      return Reflect.ownKeys(t).filter((k) => !hiddenFromOwnKeys(t, k));
     },
     getOwnPropertyDescriptor(t, k) {
       if (internal(t, k)) return undefined;

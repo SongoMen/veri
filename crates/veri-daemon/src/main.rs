@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use veri::{Client, Protection, RetryPolicy};
-use veri_integrations::{AwsWaf, Cloudflare, DataDome, PerimeterX, Vercel};
+use veri_integrations::{Akamai, AwsWaf, Cloudflare, DataDome, PerimeterX, Recaptcha, Vercel};
 
 const PROTOCOL_VERSION: u32 = 2;
 const DEFAULT_CONCURRENCY: usize = 16;
@@ -203,9 +203,11 @@ fn protections(solver: bool) -> Vec<Arc<dyn Protection>> {
         return vec![
             Arc::new(Cloudflare::detect_only()),
             Arc::new(DataDome::detect_only()),
+            Arc::new(Akamai::detect_only()),
             Arc::new(AwsWaf::detect_only()),
             Arc::new(PerimeterX::detect_only()),
             Arc::new(Vercel::detect_only()),
+            Arc::new(Recaptcha::detect_only()),
         ];
     }
     let page = || Arc::new(veri_js::V8Solver::new().shadow_dom(true));
@@ -218,12 +220,16 @@ fn protections(solver: bool) -> Vec<Arc<dyn Protection>> {
                 .stopping_at(veri_integrations::cloudflare::CLEARANCE_COOKIE),
         ))),
         Arc::new(DataDome::detect_only()),
+        Arc::new(Akamai::detect_only()),
         Arc::new(AwsWaf::with_solver(page())),
         Arc::new(PerimeterX::detect_only()),
         Arc::new(Vercel::with_solver(Arc::new(
             veri_js::V8Solver::new()
                 .shadow_dom(true)
                 .stopping_at(veri_integrations::vercel::CLEARANCE_COOKIE),
+        ))),
+        Arc::new(Recaptcha::with_solver(Arc::new(
+            veri_js::V8Solver::new().shadow_dom(true).frames(true),
         ))),
     ]
 }

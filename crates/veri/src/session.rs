@@ -70,8 +70,9 @@ impl SessionStore {
     }
 
     fn build_client(&self, identity: Identity, jar: Arc<Jar>) -> Result<wreq::Client, Error> {
-        let mut builder = wreq::Client::builder()
-            .emulation(crate::identity::profile_for(&identity))
+        let base = wreq::Client::builder();
+        let base = base.emulation(crate::identity::profile_for(&identity));
+        let mut builder = base
             .cookie_provider(jar)
             .https_only(self.config.https_only)
             .redirect(if self.config.redirect_limit == 0 {
@@ -219,16 +220,22 @@ impl SessionBridge {
         len: impl Fn(&T) -> usize,
     ) -> (u16, T) {
         let fut = async {
+            let extra = self.extra.lock().unwrap().clone();
+            let sensor_ct = extra
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.clone());
             let mut req = if method.eq_ignore_ascii_case("POST") {
-                self.session
-                    .client
-                    .post(url)
-                    .header("content-type", veri_core::http::content_type_for(body))
-                    .body(body.to_string())
+                let r = self.session.client.post(url);
+                let r = match &sensor_ct {
+                    Some(ct) => r.header("content-type", ct.as_str()),
+                    None => r.header("content-type", veri_core::http::content_type_for(body)),
+                };
+                r.body(body.to_string())
             } else {
                 self.session.client.get(url)
             };
-            for (k, v) in self.extra.lock().unwrap().iter() {
+            for (k, v) in extra.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("content-type")) {
                 req = req.header(k.as_str(), v.as_str());
             }
             req = req

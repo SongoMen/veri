@@ -1174,16 +1174,29 @@
           return makeAudioNode({});
         },
         disconnect() {},
-        start() {},
-        stop() {},
-        frequency: { value: 440, setValueAtTime() {} },
-        gain: { value: 1, setValueAtTime() {} },
-        type: 'sine',
         channelCount: 2,
+        channelCountMode: 'max',
+        channelInterpretation: 'speakers',
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
       },
       extra || {},
     );
   }
+  const __param = (v) => ({
+    value: v,
+    defaultValue: v,
+    minValue: -3.4028234663852886e38,
+    maxValue: 3.4028234663852886e38,
+    automationRate: 'a-rate',
+    setValueAtTime() {},
+    linearRampToValueAtTime() {},
+    exponentialRampToValueAtTime() {},
+    setTargetAtTime() {},
+    setValueCurveAtTime() {},
+    cancelScheduledValues() {},
+    cancelAndHoldAtTime() {},
+  });
   const __AUDIO = (__M.media && __M.media.audio) || {};
   // The profile is deleted once it has been materialised, so the media
   // tables are carried forward for the fragments that load after it.
@@ -1226,32 +1239,56 @@
       numberOfInputs: __AUDIO.numberOfInputs !== undefined ? __AUDIO.numberOfInputs : 1,
       numberOfOutputs: __AUDIO.numberOfOutputs !== undefined ? __AUDIO.numberOfOutputs : 0,
       channelCount: __AUDIO.channelCount || 2,
+      // AudioDestinationNode fixes channelCountMode to "explicit" (Chrome reports it);
+      // the generic "max" default would misreport this specific node.
+      channelCountMode: 'explicit',
     });
     this.listener = {};
-    this.createOscillator = () => __node(makeAudioNode({ type: 'sine' }), 'OscillatorNode');
-    this.createGain = () => __node(makeAudioNode({}), 'GainNode');
+    this.createOscillator = () =>
+      __node(
+        makeAudioNode({
+          numberOfInputs: 0,
+          frequency: __param(440),
+          detune: __param(0),
+          type: 'sine',
+          start() {},
+          stop() {},
+        }),
+        'OscillatorNode',
+      );
+    this.createGain = () => __node(makeAudioNode({ gain: __param(1) }), 'GainNode');
     this.createAnalyser = () =>
       __node(
         makeAudioNode({
           fftSize: 2048,
           frequencyBinCount: 1024,
+          minDecibels: -100,
+          maxDecibels: -30,
+          smoothingTimeConstant: 0.8,
           getFloatFrequencyData(a) {
-            for (let i = 0; i < a.length; i++) a[i] = -100 - (i % 30);
+            // An analyser with no connected source (the sensor's case) reports
+            // -Infinity for every bin in Chrome; the old synthetic ramp was a tell.
+            for (let i = 0; i < a.length; i++) a[i] = -Infinity;
           },
           getByteFrequencyData(a) {
-            for (let i = 0; i < a.length; i++) a[i] = 128 - (i % 30);
+            // Byte form floors to 0 when the float form is -Infinity.
+            for (let i = 0; i < a.length; i++) a[i] = 0;
           },
         }),
         'AnalyserNode',
       );
     this.createDynamicsCompressor = () =>
-      makeAudioNode({
-        threshold: { value: -24 },
-        knee: { value: 30 },
-        ratio: { value: 12 },
-        attack: { value: 0.003 },
-        release: { value: 0.25 },
-      });
+      __node(
+        makeAudioNode({
+          threshold: __param(-24),
+          knee: __param(30),
+          ratio: __param(12),
+          attack: __param(0.003),
+          release: __param(0.25),
+          reduction: 0,
+        }),
+        'DynamicsCompressorNode',
+      );
     this.createScriptProcessor = () => makeAudioNode({});
     this.createBuffer = (c, l, r) => ({
       sampleRate: r,
@@ -1267,10 +1304,33 @@
         return a;
       },
     });
-    this.createBufferSource = () => makeAudioNode({ buffer: null });
+    this.createBufferSource = () =>
+      __node(
+        makeAudioNode({
+          numberOfInputs: 0,
+          buffer: null,
+          playbackRate: __param(1),
+          detune: __param(0),
+          loop: false,
+          loopStart: 0,
+          loopEnd: 0,
+          start() {},
+          stop() {},
+        }),
+        'AudioBufferSourceNode',
+      );
     this.startRendering = () => Promise.resolve(this.createBuffer(1, 44100, 44100));
     this.close = () => Promise.resolve();
     this.resume = () => Promise.resolve();
+    this.decodeAudioData = function decodeAudioData(audioData) {
+      const errCb = arguments[2];
+      const ex = new (typeof DOMException !== 'undefined' ? DOMException : Error)(
+        'Unable to decode audio data',
+        'EncodingError'
+      );
+      if (typeof errCb === 'function') errCb(ex);
+      return Promise.reject(ex);
+    };
   }
   try {
     Object.defineProperty(AudioContextShim, 'name', { value: 'AudioContext', configurable: true });
@@ -1278,11 +1338,45 @@
   globalThis.AudioContext = AudioContextShim;
   const OfflineAudioContext = function OfflineAudioContext(ch, len, rate) {
     AudioContextShim.call(this);
+    delete this.baseLatency;
+    delete this.outputLatency;
+    let chans = 1;
+    if (ch && typeof ch === 'object') {
+      chans = ch.numberOfChannels || 1;
+      if (ch.length) len = ch.length;
+      if (ch.sampleRate) rate = ch.sampleRate;
+    } else {
+      chans = ch || 1;
+    }
     if (rate) this.sampleRate = rate;
-    this.length = len || 0;
-    this.startRendering = () => Promise.resolve(null);
+    const numLen = typeof len === 'number' && isFinite(len) && len > 0 ? len : 0;
+    Object.defineProperty(this, 'length', {
+      value: numLen,
+      writable: false,
+      enumerable: true,
+      configurable: true,
+    });
+    Object.defineProperty(this, 'numberOfChannels', {
+      value: chans,
+      writable: false,
+      enumerable: true,
+      configurable: true,
+    });
+    this.startRendering = () => {
+      const buf = this.createBuffer(chans, numLen || 44100, this.sampleRate);
+      try {
+        if (typeof this.oncomplete === 'function') this.oncomplete({ renderedBuffer: buf });
+      } catch (e) {}
+      return Promise.resolve(buf);
+    };
   };
-  OfflineAudioContext.prototype = AudioContextShim.prototype;
+  OfflineAudioContext.prototype = Object.create(AudioContextShim.prototype);
+  Object.defineProperty(OfflineAudioContext.prototype, 'constructor', {
+    value: OfflineAudioContext,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
   globalThis.OfflineAudioContext = OfflineAudioContext;
 
   // OffscreenCanvas needs a real context: the profile only creates a bare

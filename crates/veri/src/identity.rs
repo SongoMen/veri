@@ -34,7 +34,7 @@ pub const KNOWN: &[Identity] = &[
 ];
 
 pub const DEFAULT_LADDER: &[&str] =
-    &["Firefox143", "Firefox151", "Safari26", "Chrome149", "SafariIos26", "Chrome143"];
+    &["Firefox143", "Firefox151", "Safari26", "SafariIos26", "Chrome149", "Chrome143"];
 
 pub fn by_name(name: &str) -> Option<Identity> {
     KNOWN.iter().copied().find(|i| i.name == name)

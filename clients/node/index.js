@@ -10,7 +10,8 @@ const DAEMON_DEADLINE_MS = 300000;
 
 const EXE = process.platform === 'win32' ? 'veri-daemon.exe' : 'veri-daemon';
 
-const PLATFORM_PACKAGE = `veri-http-${process.platform}-${process.arch}`;
+const PLATFORM_TAG = process.platform === 'win32' ? 'windows' : process.platform;
+const PLATFORM_PACKAGE = `veri-http-${PLATFORM_TAG}-${process.arch}`;
 
 function findDaemon() {
   if (process.env.VERI_DAEMON_PATH && fs.existsSync(process.env.VERI_DAEMON_PATH)) {

@@ -484,6 +484,13 @@ impl Client {
             return Ok(AfterClear::NotCleared);
         }
 
+        if let Some(ms) = std::env::var("VERI_CLEAR_RETRY_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
+
         let after = match self.send_with_retry(session, spec, budget).await {
             Ok(f) => f,
             Err(Error::Transport(e)) if !e.is_egress_fault() => {
@@ -640,7 +647,11 @@ impl Client {
                 .find_map(|p| Verdict::from_outcome(p.inspect(&parts)).map(|v| (v, p.clone())))
             {
                 Some((v, p)) => (v, Some(p)),
-                None => (Verdict::from_status(status), None),
+                None => (
+                    Verdict::from_outcome(Outcome::from_unmarked(&parts))
+                        .unwrap_or_else(|| Verdict::from_status(status)),
+                    None,
+                ),
             }
         };
         Ok(Fetched { status, headers, body, verdict, claimed, url })

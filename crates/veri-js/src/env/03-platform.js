@@ -582,21 +582,328 @@
     return here ? __resolveUrl(String(url), here) : String(url);
   };
 
-  globalThis.URL = function URL(url, base) {
-    const abs = base ? __resolveUrl(url, base) : String(url);
-    const m = /^(https?:|blob:)\/*([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/.exec(abs) || [];
-    this.href = abs;
-    this.protocol = m[1] || 'https:';
-    this.host = m[2] || '';
-    this.hostname = (m[2] || '').split(':')[0];
-    this.port = (m[2] || '').split(':')[1] || '';
-    this.pathname = m[3] || '/';
-    this.search = m[4] || '';
-    this.hash = m[5] || '';
-    this.origin = (m[1] || 'https:') + '//' + (m[2] || '');
-    this.searchParams = new globalThis.URLSearchParams(this.search);
-    this.toString = () => this.href;
+  globalThis.__toAbsolute = function __toAbsolute(url) {
+    const s = String(url == null ? '' : url);
+    if (s === '' || /^[a-z][a-z0-9+.-]*:/i.test(s)) return s;
+    try {
+      const loc = globalThis.location;
+      const origin = (loc && loc.origin) || '';
+      if (origin && s.charAt(0) === '/') return origin + s;
+      if (loc && loc.href) return new URL(s, loc.href).href;
+    } catch (e) {}
+    return s;
   };
+
+  const __URL_DEFAULT_PORT = {
+    'http:': '80',
+    'https:': '443',
+    'ws:': '80',
+    'wss:': '443',
+    'ftp:': '21',
+  };
+  const __URL_SPECIAL = {
+    'http:': 1,
+    'https:': 1,
+    'ws:': 1,
+    'wss:': 1,
+    'ftp:': 1,
+    'file:': 1,
+  };
+  function __urlNormPath(path) {
+    const abs = path.charAt(0) === '/';
+    const stack = [];
+    for (const seg of path.split('/')) {
+      if (seg === '.' || seg === '%2e' || seg === '%2E') continue;
+      if (seg === '..') {
+        if (stack.length && stack[stack.length - 1] !== '') stack.pop();
+        continue;
+      }
+      stack.push(seg);
+    }
+    let res = stack.join('/');
+    if (abs && res.charAt(0) !== '/') res = '/' + res;
+    return res;
+  }
+  function __urlParse(input, base) {
+    input = String(input).replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+    const sm = /^([a-zA-Z][a-zA-Z0-9+.\-]*):/.exec(input);
+    if (!sm) {
+      if (base == null) throw new TypeError("Failed to construct 'URL': Invalid URL");
+      const b = base.__parts ? base.__parts : __urlParse(String(base));
+      return __urlResolveRelative(input, b);
+    }
+    const scheme = sm[1].toLowerCase() + ':';
+    let rest = input.slice(sm[0].length);
+    const special = !!__URL_SPECIAL[scheme];
+    const p = {
+      scheme,
+      username: '',
+      password: '',
+      hostname: '',
+      port: '',
+      path: '',
+      query: '',
+      fragment: '',
+      opaque: false,
+    };
+    if (special && scheme !== 'file:' && !/^\/\//.test(rest)) {
+      // http:example.com is treated as http://example.com
+      rest = rest.replace(/^\/*/, '//');
+    }
+    if (/^\/\//.test(rest) || (special && scheme === 'file:')) {
+      rest = rest.replace(/^\/*/, '');
+      if (scheme === 'file:') rest = '/' + rest;
+      let end = rest.length;
+      for (let i = 0; i < rest.length; i++) {
+        const c = rest[i];
+        if (c === '/' || c === '?' || c === '#' || (special && c === '\\')) {
+          end = i;
+          break;
+        }
+      }
+      let authority = rest.slice(0, end);
+      const remainder = rest.slice(end);
+      const at = authority.lastIndexOf('@');
+      if (at >= 0) {
+        const info = authority.slice(0, at);
+        authority = authority.slice(at + 1);
+        const colon = info.indexOf(':');
+        p.username = colon < 0 ? info : info.slice(0, colon);
+        p.password = colon < 0 ? '' : info.slice(colon + 1);
+      }
+      const hm = /^([^:]*)(?::(\d*))?$/.exec(authority) || ['', '', ''];
+      p.hostname = (hm[1] || '').toLowerCase();
+      let port = hm[2] || '';
+      if (port && port === __URL_DEFAULT_PORT[scheme]) port = '';
+      p.port = port;
+      __urlSplitPQF(p, remainder);
+      if (special && p.path === '') p.path = '/';
+      p.path = __urlNormPath(p.path);
+    } else {
+      p.opaque = true;
+      __urlSplitPQF(p, rest);
+    }
+    return p;
+  }
+  function __urlSplitPQF(p, s) {
+    const hashAt = s.indexOf('#');
+    if (hashAt >= 0) {
+      p.fragment = s.slice(hashAt);
+      s = s.slice(0, hashAt);
+    }
+    const qAt = s.indexOf('?');
+    if (qAt >= 0) {
+      p.query = s.slice(qAt);
+      s = s.slice(0, qAt);
+    }
+    p.path = s;
+  }
+  function __urlResolveRelative(input, b) {
+    const p = {
+      scheme: b.scheme,
+      username: b.username,
+      password: b.password,
+      hostname: b.hostname,
+      port: b.port,
+      path: b.path,
+      query: b.query,
+      fragment: '',
+      opaque: b.opaque,
+    };
+    if (input === '') {
+      p.query = b.query;
+      return p;
+    }
+    if (input.charAt(0) === '#') {
+      p.fragment = input;
+      return p;
+    }
+    if (input.charAt(0) === '?') {
+      __urlSplitPQF(p, input);
+      p.path = b.path;
+      return p;
+    }
+    if (/^\/\//.test(input)) {
+      return __urlParse(b.scheme + input);
+    }
+    // path-relative
+    p.query = '';
+    if (input.charAt(0) === '/') {
+      __urlSplitPQF(p, input);
+    } else {
+      const base = b.path.slice(0, b.path.lastIndexOf('/') + 1);
+      __urlSplitPQF(p, base + input);
+    }
+    p.path = __urlNormPath(p.path);
+    return p;
+  }
+  function __urlSerialize(p) {
+    let out = p.scheme;
+    if (!p.opaque) {
+      out += '//';
+      if (p.username || p.password) {
+        out += p.username;
+        if (p.password) out += ':' + p.password;
+        out += '@';
+      }
+      out += p.hostname;
+      if (p.port) out += ':' + p.port;
+    }
+    out += p.path + p.query + p.fragment;
+    return out;
+  }
+  function __urlOrigin(p) {
+    if (p.opaque || !p.hostname) return 'null';
+    return p.scheme + '//' + p.hostname + (p.port ? ':' + p.port : '');
+  }
+  const URLImpl = function URL(url, base) {
+    const parts = __urlParse(url, base === undefined ? null : base);
+    Object.defineProperty(this, '__parts', { value: parts, writable: true });
+    this.searchParams = new globalThis.URLSearchParams(parts.query);
+  };
+  const accessor = (name, get, set) =>
+    Object.defineProperty(URLImpl.prototype, name, {
+      get,
+      set,
+      enumerable: true,
+      configurable: true,
+    });
+  accessor(
+    'href',
+    function () {
+      return __urlSerialize(this.__parts);
+    },
+    function (v) {
+      this.__parts = __urlParse(v);
+      this.searchParams = new globalThis.URLSearchParams(this.__parts.query);
+    },
+  );
+  accessor(
+    'protocol',
+    function () {
+      return this.__parts.scheme;
+    },
+    function (v) {
+      const s = String(v).replace(/:?$/, ':').toLowerCase();
+      if (/^[a-z][a-z0-9+.\-]*:$/.test(s)) this.__parts.scheme = s;
+    },
+  );
+  accessor(
+    'username',
+    function () {
+      return this.__parts.username;
+    },
+    function (v) {
+      this.__parts.username = String(v);
+    },
+  );
+  accessor(
+    'password',
+    function () {
+      return this.__parts.password;
+    },
+    function (v) {
+      this.__parts.password = String(v);
+    },
+  );
+  accessor(
+    'hostname',
+    function () {
+      return this.__parts.hostname;
+    },
+    function (v) {
+      this.__parts.hostname = String(v)
+        .toLowerCase()
+        .replace(/[/\\?#].*$/, '');
+    },
+  );
+  accessor(
+    'port',
+    function () {
+      return this.__parts.port;
+    },
+    function (v) {
+      const s = String(v).replace(/\D.*$/, '');
+      this.__parts.port = s && s === __URL_DEFAULT_PORT[this.__parts.scheme] ? '' : s;
+    },
+  );
+  accessor(
+    'host',
+    function () {
+      const p = this.__parts;
+      return p.hostname + (p.port ? ':' + p.port : '');
+    },
+    function (v) {
+      const hm = /^([^:]*)(?::(\d*))?/.exec(String(v)) || [];
+      this.__parts.hostname = (hm[1] || '').toLowerCase();
+      this.__parts.port = hm[2] || '';
+    },
+  );
+  accessor(
+    'pathname',
+    function () {
+      return this.__parts.path;
+    },
+    function (v) {
+      let s = String(v);
+      if (!this.__parts.opaque && s.charAt(0) !== '/') s = '/' + s;
+      this.__parts.path = this.__parts.opaque ? s : __urlNormPath(s);
+    },
+  );
+  accessor(
+    'search',
+    function () {
+      return this.__parts.query;
+    },
+    function (v) {
+      let s = String(v);
+      if (s && s.charAt(0) !== '?') s = '?' + s;
+      this.__parts.query = s;
+      this.searchParams = new globalThis.URLSearchParams(s);
+    },
+  );
+  accessor(
+    'hash',
+    function () {
+      return this.__parts.fragment;
+    },
+    function (v) {
+      let s = String(v);
+      if (s && s.charAt(0) !== '#') s = '#' + s;
+      this.__parts.fragment = s;
+    },
+  );
+  accessor('origin', function () {
+    return __urlOrigin(this.__parts);
+  });
+  URLImpl.prototype.toString = function () {
+    return this.href;
+  };
+  URLImpl.prototype.toJSON = function () {
+    return this.href;
+  };
+  try {
+    Object.defineProperty(URLImpl.prototype, Symbol.toStringTag, {
+      value: 'URL',
+      configurable: true,
+    });
+  } catch (e) {}
+  URLImpl.canParse = function (url, base) {
+    try {
+      __urlParse(url, base === undefined ? null : base);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+  URLImpl.parse = function (url, base) {
+    try {
+      return new URLImpl(url, base);
+    } catch (e) {
+      return null;
+    }
+  };
+  globalThis.URL = URLImpl;
 
   globalThis.URLSearchParams = function URLSearchParams(init) {
     const pairs = [];
@@ -634,12 +941,20 @@
       for (let i = pairs.length - 1; i >= 0; i--) if (pairs[i][0] === k) pairs.splice(i, 1);
     };
     this.forEach = (fn) => pairs.forEach((p) => fn(p[1], p[0], this));
+    // A stable sort by code unit, which is what the spec's `sort()` does (JS
+    // Array.sort is stable); it was a no-op before.
+    this.sort = () => {
+      pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    };
     this.keys = () => pairs.map((p) => p[0])[Symbol.iterator]();
     this.values = () => pairs.map((p) => p[1])[Symbol.iterator]();
     this.entries = () => pairs.map((p) => [p[0], p[1]])[Symbol.iterator]();
     this[Symbol.iterator] = () => this.entries();
-    this.toString = () =>
-      pairs.map((p) => encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1])).join('&');
+    const formEnc = (s) =>
+      encodeURIComponent(String(s))
+        .replace(/%20/g, '+')
+        .replace(/[!'()~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    this.toString = () => pairs.map((p) => formEnc(p[0]) + '=' + formEnc(p[1])).join('&');
     Object.defineProperty(this, 'size', { get: () => pairs.length });
   };
   globalThis.URL.createObjectURL = function (blob) {
@@ -654,7 +969,7 @@
 
   // A worker's navigator is a WorkerNavigator, not the page's Navigator:
   globalThis.__workerNavigator = function __workerNavigator() {
-    const n = globalThis.navigator;
+    const n = globalThis.__RAW_NAVIGATOR || globalThis.navigator;
     const out = {};
     // prettier-ignore
     for (const k of [
@@ -742,7 +1057,12 @@
       onmessageerror: null,
       onerror: null,
       close() {},
-      importScripts() {},
+      importScripts() {
+        throw new (globalThis.DOMException || Error)(
+          'importScripts is only available inside a worker',
+          'InvalidAccessError',
+        );
+      },
       addEventListener(t, f) {
         if (t === 'message') scope.__msgListeners.push(f);
       },
@@ -903,6 +1223,12 @@
   globalThis.MessagePort.prototype = {
     constructor: globalThis.MessagePort,
     postMessage(data) {
+      if (this.__remoteSend) {
+        try {
+          this.__remoteSend(this.__remoteId, data);
+        } catch (e) {}
+        return;
+      }
       const peer = this.__peer;
       if (!peer || peer.__closed) return;
       __schedule(
@@ -969,6 +1295,141 @@
       this.start();
     },
   });
+  globalThis.SharedWorker = function SharedWorker(url, opts) {
+    this.onerror = null;
+    const port1 = new globalThis.MessagePort();
+    const port2 = new globalThis.MessagePort();
+    port1.__peer = port2;
+    port2.__peer = port1;
+    Object.defineProperty(this, 'port', { value: port1, enumerable: true, configurable: true });
+    let src = __BLOBS.get(String(url)) || '';
+    if (!src && String(url) && typeof __HOST_FETCH === 'function') {
+      try {
+        const r = JSON.parse(__HOST_FETCH('GET', __absolute(url), ''));
+        src = String(r.body || '');
+      } catch (e) {}
+    }
+    if (!src) return;
+    const scope = {
+      onconnect: null,
+      __connectListeners: [],
+      name: (opts && typeof opts.name === 'string' && opts.name) || (opts && typeof opts === 'string' ? opts : ''),
+      close() {},
+      importScripts() {},
+      addEventListener(t, f) {
+        if (t === 'connect' && typeof f === 'function') scope.__connectListeners.push(f);
+      },
+      removeEventListener() {},
+      navigator: __workerNavigator(),
+      location: globalThis.location,
+      performance: globalThis.performance,
+      crypto: globalThis.crypto,
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+      queueMicrotask: globalThis.queueMicrotask,
+      Math, JSON, Date, Array, Object, String, Number, Boolean, Error, Promise, RegExp,
+      Function, Intl, Symbol, Reflect, Proxy, Map, Set, WeakMap, WeakSet,
+      Uint8Array, Uint32Array, Int32Array, Float64Array, ArrayBuffer, DataView,
+      TextEncoder, TextDecoder,
+      atob: globalThis.atob,
+      btoa: globalThis.btoa,
+      OffscreenCanvas: globalThis.OffscreenCanvas,
+      createImageBitmap: globalThis.createImageBitmap,
+      fetch: globalThis.fetch,
+      XMLHttpRequest: globalThis.XMLHttpRequest,
+      MessagePort: globalThis.MessagePort,
+      MessageChannel: globalThis.MessageChannel,
+      WorkerNavigator: globalThis.__WorkerNavigator,
+      window: undefined,
+      document: undefined,
+    };
+    const sandbox = new Proxy(scope, {
+      has() {
+        return true;
+      },
+      get(t, k) {
+        if (k === Symbol.unscopables) return undefined;
+        return k in t ? t[k] : globalThis[k];
+      },
+      set(t, k, v) {
+        t[k] = v;
+        return true;
+      },
+    });
+    scope.self = sandbox;
+    scope.globalThis = sandbox;
+    this.__scope = scope;
+    try {
+      globalThis.__IN_WORKER = true;
+      const f = new globalThis.Function('__veriWorkerScope', 'with (__veriWorkerScope) {\n' + src + '\n}');
+      f.call(sandbox, sandbox);
+      globalThis.__IN_WORKER = false;
+    } catch (e) {
+      try { __rec('call', 'SharedWorker:threw:' + String(e).slice(0, 80), 0); } catch (x) {}
+    }
+    __schedule(function () {
+      const ev = { type: 'connect', data: '', ports: [port2], source: null, target: scope };
+      for (const fn of scope.__connectListeners.slice()) {
+        try {
+          fn.call(scope, ev);
+        } catch (e) {}
+      }
+      if (typeof scope.onconnect === 'function') {
+        try {
+          scope.onconnect.call(scope, ev);
+        } catch (e) {}
+      }
+    }, 0);
+  };
+  try {
+    Object.defineProperty(globalThis.SharedWorker, 'name', { value: 'SharedWorker', configurable: true });
+  } catch (e) {}
+
+  globalThis.__PORTS = new Map();
+  globalThis.__PORT_SEQ = 0;
+
+  globalThis.__portsOut = function __portsOut(transfer, send) {
+    const ids = [];
+    if (!transfer || typeof transfer.length !== 'number') return ids;
+    for (let i = 0; i < transfer.length; i++) {
+      const port = transfer[i];
+      if (!port || !(port instanceof globalThis.MessagePort)) continue;
+      const id = (globalThis.__PORT_PREFIX || 'p') + ++globalThis.__PORT_SEQ;
+      const stays = port.__peer;
+      if (stays) {
+        stays.__peer = null;
+        stays.__remoteId = id;
+        stays.__remoteSend = send;
+        globalThis.__PORTS.set(id, stays);
+      }
+      port.__peer = null;
+      port.__closed = true;
+      ids.push(id);
+    }
+    return ids;
+  };
+
+  globalThis.__portsIn = function __portsIn(ids, send) {
+    const out = [];
+    if (!ids || typeof ids.length !== 'number') return out;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const port = new globalThis.MessagePort();
+      port.__remoteId = id;
+      port.__remoteSend = send;
+      globalThis.__PORTS.set(id, port);
+      out.push(port);
+    }
+    return out;
+  };
+
+  globalThis.__portDeliver = function __portDeliver(id, data) {
+    const port = globalThis.__PORTS.get(id);
+    if (!port) return;
+    port.__accept({ data, type: 'message', isTrusted: true, target: port, ports: [] });
+  };
 
   globalThis.MessageChannel = function MessageChannel() {
     const a = new globalThis.MessagePort();
@@ -1015,6 +1476,7 @@
     'Europe/Stockholm': [60, 'eu', 'Central European Standard Time', 'Central European Summer Time'],
     'Europe/Zurich': [60, 'eu', 'Central European Standard Time', 'Central European Summer Time'],
     'Europe/Prague': [60, 'eu', 'Central European Standard Time', 'Central European Summer Time'],
+    'Europe/Warsaw': [60, 'eu', 'Central European Standard Time', 'Central European Summer Time'],
     'Europe/Helsinki': [120, 'eu', 'Eastern European Standard Time', 'Eastern European Summer Time'],
     'Europe/Athens': [120, 'eu', 'Eastern European Standard Time', 'Eastern European Summer Time'],
     'Europe/Bucharest': [120, 'eu', 'Eastern European Standard Time', 'Eastern European Summer Time'],
@@ -1058,8 +1520,9 @@
       return RealDate.UTC(year, month + 1, 0 - back, hourUTC);
     }
 
-    function inDst(ms) {
-      const rule = zone[1];
+    function inDst(ms, z) {
+      z = z || zone;
+      const rule = z[1];
       if (!rule) return false;
       const y = new RealDate(ms).getUTCFullYear();
       if (rule === 'eu') {
@@ -1068,7 +1531,7 @@
       }
       if (rule === 'us') {
         // Second Sunday of March to first Sunday of November, 02:00 local.
-        const std = zone[0];
+        const std = z[0];
         return (
           ms >= nthDow(y, 2, 0, 2, 2) - std * 60000 &&
           ms < nthDow(y, 10, 0, 1, 2) - (std + 60) * 60000
@@ -1081,9 +1544,14 @@
       return false;
     }
 
-    const eastOf = (ms) => zone[0] + (inDst(ms) ? 60 : 0);
+    const eastOf = (ms, z) => (z || zone)[0] + (inDst(ms, z) ? 60 : 0);
     const offsetAt = (ms) => -eastOf(ms);
-    const zoneName = (ms) => (inDst(ms) && zone[3] ? zone[3] : zone[2] || 'GMT');
+    const zoneName = (ms, z) => {
+      z = z || zone;
+      return inDst(ms, z) && z[3] ? z[3] : z[2] || 'GMT';
+    };
+    const zoneFor = (name) =>
+      (name && ZONES[name]) || (name === tz ? zone : ZONES.UTC || [0, null, 'GMT', null]);
 
     try {
       Date.prototype.getTimezoneOffset = function () {
@@ -1108,6 +1576,179 @@
     ];
     const pad = (n) => String(n).padStart(2, '0');
     const shifted = (d) => new RealDate(d.getTime() + eastOf(d.getTime()) * 60000);
+    // `GMT-4` / `GMT-04:00` for the offset-shaped timeZoneName options.
+    const gmtOffset = (ms, padded) => {
+      const off = eastOf(ms);
+      const abs = Math.abs(off);
+      const h = (abs / 60) | 0;
+      const m = abs % 60;
+      const sign = off >= 0 ? '+' : '-';
+      if (padded) return 'GMT' + sign + pad(h) + ':' + pad(m);
+      return 'GMT' + sign + h + (m ? ':' + pad(m) : '');
+    };
+    const shortZoneName = (ms, z) => {
+      const long = zoneName(ms, z);
+      if (long && long !== 'GMT' && /\s/.test(long)) {
+        const abbr = long
+          .split(/\s+/)
+          .map((w) => w[0])
+          .join('')
+          .toUpperCase();
+        if (abbr.length >= 2) return abbr;
+      }
+      return gmtOffset(ms, false);
+    };
+    // The value Chrome puts in a `timeZoneName` part for each option form.
+    const tzNameValue = (mode, ms, z) => {
+      switch (mode) {
+        case 'long':
+          return zoneName(ms, z);
+        case 'short':
+          return shortZoneName(ms, z);
+        case 'shortOffset':
+          return gmtOffset(ms, false);
+        case 'longOffset':
+          return gmtOffset(ms, true);
+        case 'longGeneric':
+          return zoneName(ms, z);
+        case 'shortGeneric':
+          return shortZoneName(ms, z);
+        default:
+          return shortZoneName(ms, z);
+      }
+    };
+
+    const MON_LONG = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    const DAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    function __dtfParts(opts, date) {
+      const z = zoneFor(opts.timeZone);
+      const ms = date.getTime();
+      const u = new RealDate(ms + eastOf(ms, z) * 60000);
+      const Y = u.getUTCFullYear();
+      const Mo = u.getUTCMonth();
+      const Dd = u.getUTCDate();
+      const H = u.getUTCHours();
+      const Mi = u.getUTCMinutes();
+      const Sec = u.getUTCSeconds();
+      const dow = u.getUTCDay();
+
+      const f = {};
+      if (opts.dateStyle) {
+        f.weekday = opts.dateStyle === 'full' ? 'long' : undefined;
+        f.year = 'numeric';
+        f.month =
+          opts.dateStyle === 'full' || opts.dateStyle === 'long'
+            ? 'long'
+            : opts.dateStyle === 'medium'
+              ? 'short'
+              : 'numeric';
+        f.day = 'numeric';
+      }
+      if (opts.timeStyle) {
+        f.hour = 'numeric';
+        f.minute = '2-digit';
+        if (opts.timeStyle !== 'short') f.second = '2-digit';
+      }
+      if (!opts.dateStyle && !opts.timeStyle) {
+        f.weekday = opts.weekday;
+        f.year = opts.year;
+        f.month = opts.month;
+        f.day = opts.day;
+        f.hour = opts.hour;
+        f.minute = opts.minute;
+        f.second = opts.second;
+      }
+      const hour12 =
+        opts.hour12 !== undefined
+          ? opts.hour12
+          : opts.hourCycle
+            ? opts.hourCycle === 'h11' || opts.hourCycle === 'h12'
+            : true;
+
+      const num = (n, style) => (style === '2-digit' ? pad(n) : String(n));
+      const parts = [];
+      const push = (type, value) => parts.push({ type, value });
+
+      if (f.weekday) {
+        push('weekday', f.weekday === 'long' ? DAY_LONG[dow] : DAY[dow]);
+        push('literal', ', ');
+      }
+      const hasDate = f.year || f.month || f.day;
+      const monthWord = f.month === 'long' || f.month === 'short';
+      if (hasDate) {
+        if (monthWord) {
+          if (f.month) push('month', f.month === 'long' ? MON_LONG[Mo] : MON[Mo]);
+          if (f.day) {
+            push('literal', ' ');
+            push('day', num(Dd, f.day));
+          }
+          if (f.year) {
+            push('literal', ', ');
+            push('year', f.year === '2-digit' ? pad(Y % 100) : String(Y));
+          }
+        } else {
+          const seq = [];
+          if (f.month) seq.push(['month', num(Mo + 1, f.month)]);
+          if (f.day) seq.push(['day', num(Dd, f.day)]);
+          if (f.year) seq.push(['year', f.year === '2-digit' ? pad(Y % 100) : String(Y)]);
+          seq.forEach((s, i) => {
+            if (i) push('literal', '/');
+            push(s[0], s[1]);
+          });
+        }
+      }
+      const hasTime = f.hour || f.minute || f.second;
+      if (hasTime) {
+        if (hasDate) push('literal', opts.dateStyle && opts.timeStyle ? ' at ' : ', ');
+        const hh = hour12 ? (H % 12 === 0 ? 12 : H % 12) : H;
+        push('hour', num(hh, f.hour === '2-digit' ? '2-digit' : 'numeric'));
+        if (f.minute) {
+          push('literal', ':');
+          push('minute', num(Mi, f.minute));
+        }
+        if (f.second) {
+          push('literal', ':');
+          push('second', num(Sec, f.second));
+        }
+        if (hour12) {
+          push('literal', ' ');
+          push('dayPeriod', H < 12 ? 'AM' : 'PM');
+        }
+      }
+      let tzMode = opts.timeZoneName;
+      if (!tzMode && opts.timeStyle === 'long') tzMode = 'short';
+      else if (!tzMode && opts.timeStyle === 'full') tzMode = 'long';
+      const wantsTz = !!tzMode;
+      if (!hasDate && !hasTime && !wantsTz) {
+        push('month', String(Mo + 1));
+        push('literal', '/');
+        push('day', String(Dd));
+        push('literal', '/');
+        push('year', String(Y));
+      }
+      if (wantsTz) {
+        if (parts.length) push('literal', hasTime ? ' ' : ', ');
+        push('timeZoneName', tzNameValue(tzMode, ms, z));
+      }
+      return parts;
+    }
+    const __dtfFormat = (opts, date) =>
+      __dtfParts(opts, date)
+        .map((p) => p.value)
+        .join('');
     function gmt(d) {
       const off = eastOf(d.getTime());
       const abs = Math.abs(off);
@@ -1190,7 +1831,9 @@
           calendar: 'gregory',
           numberingSystem: 'latn',
           timeZone: o.timeZone || tz,
-          ...(asked ? {} : { year: 'numeric', month: '2-digit', day: '2-digit' }),
+          // Chrome's default is numeric month/day/year (\"1/1/1970\"), not
+          // 2-digit.
+          ...(asked ? {} : { year: 'numeric', month: 'numeric', day: 'numeric' }),
           ...o,
         };
         return this;
@@ -1200,44 +1843,259 @@
       };
       DTF.prototype.format = function (d) {
         const date = d instanceof RealDate ? d : new RealDate(d === undefined ? RealDate.now() : d);
-        return date.toLocaleDateString();
+        return __dtfFormat(this.__opts, date);
       };
       DTF.prototype.formatToParts = function (d) {
         const date = d instanceof RealDate ? d : new RealDate(d === undefined ? RealDate.now() : d);
-        const u = shifted(date);
-        return [
-          { type: 'month', value: pad(u.getUTCMonth() + 1) },
-          { type: 'literal', value: '/' },
-          { type: 'day', value: pad(u.getUTCDate()) },
-          { type: 'literal', value: '/' },
-          { type: 'year', value: String(u.getUTCFullYear()) },
-          { type: 'literal', value: ', ' },
-          { type: 'hour', value: pad(u.getUTCHours()) },
-          { type: 'literal', value: ':' },
-          { type: 'minute', value: pad(u.getUTCMinutes()) },
-          { type: 'literal', value: ':' },
-          { type: 'second', value: pad(u.getUTCSeconds()) },
-          { type: 'timeZoneName', value: zoneName(date.getTime()) },
-        ];
+        return __dtfParts(this.__opts, date);
       };
       DTF.supportedLocalesOf = function (l) {
         return Array.isArray(l) ? l.slice() : l ? [l] : [];
       };
+      // A constructor with all-optional params reports length 0, like Chrome;
+      // the function object defaulted to its written arity of 2.
+      try {
+        Object.defineProperty(DTF, 'length', { value: 0, configurable: true });
+      } catch (e) {}
+      // Range formatting: a minimal version that joins the two endpoints the way
+      // en-US does (an en-dash), enough that the method exists and returns a
+      // string rather than being undefined.
+      DTF.prototype.formatRange = function (a, b) {
+        const s = this.format(a);
+        const e = this.format(b);
+        return s === e ? s : s + ' – ' + e;
+      };
+      DTF.prototype.formatRangeToParts = function (a, b) {
+        return __dtfParts(this.__opts, a instanceof RealDate ? a : new RealDate(a)).concat(
+          [{ type: 'literal', value: ' – ' }],
+          __dtfParts(this.__opts, b instanceof RealDate ? b : new RealDate(b)),
+        );
+      };
       Intl.DateTimeFormat = DTF;
+    } catch (e) {}
+
+    try {
+      const SUPPORTED = {
+        calendar: [
+          'buddhist',
+          'chinese',
+          'coptic',
+          'dangi',
+          'ethioaa',
+          'ethiopic',
+          'gregory',
+          'hebrew',
+          'indian',
+          'islamic',
+          'islamic-umalqura',
+          'islamic-tbla',
+          'islamic-civil',
+          'islamic-rgsa',
+          'iso8601',
+          'japanese',
+          'persian',
+          'roc',
+        ],
+        collation: [
+          'compat',
+          'dict',
+          'emoji',
+          'eor',
+          'phonebk',
+          'pinyin',
+          'searchjl',
+          'stroke',
+          'trad',
+          'unihan',
+          'zhuyin',
+        ],
+        numberingSystem: [
+          'adlm',
+          'ahom',
+          'arab',
+          'arabext',
+          'bali',
+          'beng',
+          'deva',
+          'fullwide',
+          'gujr',
+          'guru',
+          'hanidec',
+          'khmr',
+          'knda',
+          'laoo',
+          'latn',
+          'mlym',
+          'mymr',
+          'orya',
+          'tamldec',
+          'telu',
+          'thai',
+          'tibt',
+        ],
+        unit: [
+          'acre',
+          'bit',
+          'byte',
+          'celsius',
+          'centimeter',
+          'day',
+          'degree',
+          'fahrenheit',
+          'fluid-ounce',
+          'foot',
+          'gallon',
+          'gigabit',
+          'gigabyte',
+          'gram',
+          'hectare',
+          'hour',
+          'inch',
+          'kilobit',
+          'kilobyte',
+          'kilogram',
+          'kilometer',
+          'liter',
+          'megabit',
+          'megabyte',
+          'meter',
+          'mile',
+          'mile-scandinavian',
+          'milliliter',
+          'millimeter',
+          'millisecond',
+          'minute',
+          'month',
+          'ounce',
+          'percent',
+          'petabyte',
+          'pound',
+          'second',
+          'stone',
+          'terabit',
+          'terabyte',
+          'week',
+          'yard',
+          'year',
+        ],
+        currency: [
+          'USD',
+          'EUR',
+          'JPY',
+          'GBP',
+          'AUD',
+          'CAD',
+          'CHF',
+          'CNY',
+          'HKD',
+          'NZD',
+          'SEK',
+          'KRW',
+          'SGD',
+          'NOK',
+          'MXN',
+          'INR',
+          'RUB',
+          'ZAR',
+          'TRY',
+          'BRL',
+          'TWD',
+          'DKK',
+          'PLN',
+          'THB',
+          'IDR',
+          'HUF',
+          'CZK',
+          'ILS',
+          'CLP',
+          'PHP',
+          'AED',
+          'COP',
+          'SAR',
+          'MYR',
+          'RON',
+        ],
+        timeZone: [
+          'UTC',
+          'America/New_York',
+          'America/Chicago',
+          'America/Denver',
+          'America/Los_Angeles',
+          'Europe/London',
+          'Europe/Paris',
+          'Europe/Berlin',
+          'Europe/Moscow',
+          'Asia/Tokyo',
+          'Asia/Shanghai',
+          'Asia/Kolkata',
+          'Asia/Dubai',
+          'Australia/Sydney',
+        ],
+      };
+      Intl.supportedValuesOf = function supportedValuesOf(key) {
+        const k = String(key);
+        if (!Object.prototype.hasOwnProperty.call(SUPPORTED, k)) {
+          throw new RangeError(`Invalid key : ${k}`);
+        }
+        return SUPPORTED[k].slice();
+      };
     } catch (e) {}
 
     // Without ICU these do not abort, they throw `Internal error. Icu error.`
     try {
+      // Locale separators and currency symbols - the ICU data the engine lacks.
+      // Keyed by language subtag, which is what the common cases turn on.
+      const NF_SEP = {
+        de: { g: '.', d: ',' },
+        es: { g: '.', d: ',' },
+        it: { g: '.', d: ',' },
+        nl: { g: '.', d: ',' },
+        pt: { g: '.', d: ',' },
+        tr: { g: '.', d: ',' },
+        fr: { g: ' ', d: ',' },
+        ru: { g: ' ', d: ',' },
+        pl: { g: ' ', d: ',' },
+        sv: { g: ' ', d: ',' },
+        cs: { g: ' ', d: ',' },
+      };
+      const NF_CUR = {
+        USD: '$',
+        CAD: 'CA$',
+        AUD: 'A$',
+        NZD: 'NZ$',
+        HKD: 'HK$',
+        MXN: 'MX$',
+        EUR: '€',
+        GBP: '£',
+        JPY: '¥',
+        CNY: 'CN¥',
+        INR: '₹',
+        BRL: 'R$',
+        KRW: '₩',
+        RUB: 'RUB',
+        CHF: 'CHF',
+      };
+      const NF_ZERO_DIGIT = { JPY: 1, KRW: 1, CLP: 1, VND: 1, HUF: 1, ISK: 1, TWD: 1 };
       const NF = function NumberFormat(locales, options) {
         if (!(this instanceof NF)) return new NF(locales, options);
         const o = options || {};
+        const style = o.style || 'decimal';
+        // Fraction defaults differ by style: currency two (or zero for the
+        // no-minor-unit currencies), percent zero, decimal up to three.
+        let defMin = 0;
+        let defMax = 3;
+        if (style === 'currency') {
+          defMin = defMax = NF_ZERO_DIGIT[o.currency] ? 0 : 2;
+        } else if (style === 'percent') {
+          defMin = defMax = 0;
+        }
         this.__opts = {
           locale: (Array.isArray(locales) ? locales[0] : locales) || 'en-US',
           numberingSystem: 'latn',
-          style: o.style || 'decimal',
+          style,
           minimumIntegerDigits: 1,
-          minimumFractionDigits: 0,
-          maximumFractionDigits: 3,
+          minimumFractionDigits: defMin,
+          maximumFractionDigits: defMax,
           useGrouping: o.useGrouping === undefined ? 'auto' : o.useGrouping,
           notation: 'standard',
           signDisplay: 'auto',
@@ -1253,17 +2111,36 @@
         return { ...this.__opts };
       };
       NF.prototype.format = function (n) {
-        const num = Number(n);
-        if (!isFinite(num)) return String(num);
-        const max = this.__opts.maximumFractionDigits;
-        const min = this.__opts.minimumFractionDigits;
-        let s = Math.abs(num).toFixed(Math.min(20, Math.max(min, 0)));
-        if (max > min && String(Math.abs(num)).indexOf('.') >= 0) s = String(Math.abs(num));
-        const parts = s.split('.');
-        if (this.__opts.useGrouping !== false) {
-          parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        const opts = this.__opts;
+        let num = Number(n);
+        if (isNaN(num)) return 'NaN';
+        if (!isFinite(num)) return num < 0 ? '-∞' : '∞';
+        const neg = num < 0;
+        let abs = Math.abs(num);
+        if (opts.style === 'percent') abs *= 100;
+        const min = Math.min(20, Math.max(0, opts.minimumFractionDigits));
+        const max = Math.min(20, Math.max(min, opts.maximumFractionDigits));
+        // Round to max, then trim trailing zeros back to min.
+        let s = abs.toFixed(max);
+        if (max > min) {
+          s = s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+          const dot = s.indexOf('.');
+          const have = dot < 0 ? 0 : s.length - dot - 1;
+          if (have < min) s = abs.toFixed(min);
         }
-        return (num < 0 ? '-' : '') + parts.join('.');
+        const lang = String(opts.locale).toLowerCase().split('-')[0];
+        const sep = NF_SEP[lang] || { g: ',', d: '.' };
+        const bits = s.split('.');
+        if (opts.useGrouping !== false && opts.useGrouping !== 'false') {
+          bits[0] = bits[0].replace(/\B(?=(\d{3})+(?!\d))/g, sep.g);
+        }
+        let body = bits.join(sep.d);
+        if (opts.style === 'percent') body += '%';
+        if (opts.style === 'currency') {
+          const sym = NF_CUR[opts.currency] || (opts.currency ? opts.currency + ' ' : '');
+          body = sym + body;
+        }
+        return (neg ? '-' : '') + body;
       };
       NF.prototype.formatToParts = function (n) {
         return [{ type: 'literal', value: this.format(n) }];
@@ -1271,6 +2148,9 @@
       NF.supportedLocalesOf = function (l) {
         return Array.isArray(l) ? l.slice() : l ? [l] : [];
       };
+      try {
+        Object.defineProperty(NF, 'length', { value: 0, configurable: true });
+      } catch (e) {}
       Intl.NumberFormat = NF;
 
       const CO = function Collator(locales, options) {
@@ -1291,9 +2171,22 @@
         return { ...this.__opts };
       };
       CO.prototype.compare = function (a, b) {
-        const x = String(a),
-          y = String(b);
-        return x < y ? -1 : x > y ? 1 : 0;
+        const x = String(a);
+        const y = String(b);
+        const base = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+        const bx = base(x);
+        const by = base(y);
+        if (bx < by) return -1;
+        if (bx > by) return 1;
+        const ax = x.normalize('NFD').toLowerCase();
+        const ay = y.normalize('NFD').toLowerCase();
+        if (ax < ay) return -1;
+        if (ax > ay) return 1;
+        const caseKey = (s) =>
+          s.replace(/[A-Za-z]/g, (c) => (c >= 'a' ? '0' + c : '1' + c.toLowerCase()));
+        const cx = caseKey(x);
+        const cy = caseKey(y);
+        return cx < cy ? -1 : cx > cy ? 1 : 0;
       };
       CO.supportedLocalesOf = function (l) {
         return Array.isArray(l) ? l.slice() : l ? [l] : [];
@@ -1375,6 +2268,98 @@
         return Array.isArray(l) ? l.slice() : l ? [l] : [];
       };
       Intl.ListFormat = LF;
+
+      (function () {
+        const SG = function Segmenter(locales, options) {
+          if (!(this instanceof SG)) {
+            throw new TypeError("Constructor Intl.Segmenter requires 'new'");
+          }
+          const g = (options && options.granularity) || 'grapheme';
+          if (g !== 'grapheme' && g !== 'word' && g !== 'sentence') {
+            throw new RangeError(
+              `Value ${g} out of range for Intl.Segmenter options property granularity`,
+            );
+          }
+          this.__locale = (Array.isArray(locales) ? locales[0] : locales) || 'en-US';
+          this.__granularity = g;
+        };
+        const pieces = (input, granularity) => {
+          const out = [];
+          if (granularity === 'grapheme') {
+            for (const ch of input) out.push({ segment: ch });
+            return out;
+          }
+          if (granularity === 'word') {
+            const re =
+              /[A-Za-z0-9_\u00c0-\u024f\u0400-\u04ff]+|\s+|[^A-Za-z0-9_\s\u00c0-\u024f\u0400-\u04ff]/g;
+            let m;
+            while ((m = re.exec(input))) {
+              out.push({
+                segment: m[0],
+                isWordLike: /^[A-Za-z0-9_\u00c0-\u024f\u0400-\u04ff]/.test(m[0]),
+              });
+            }
+            return out;
+          }
+          const re = /[^.!?]*[.!?]+[\s]*|[^.!?]+$/g;
+          let m;
+          while ((m = re.exec(input))) {
+            if (m[0]) out.push({ segment: m[0] });
+          }
+          return out;
+        };
+        SG.prototype.segment = function (input) {
+          const text = String(input);
+          const parts = pieces(text, this.__granularity);
+          let at = 0;
+          const data = parts.map((p) => {
+            const row = { segment: p.segment, index: at, input: text };
+            if (p.isWordLike !== undefined) row.isWordLike = p.isWordLike;
+            at += p.segment.length;
+            return row;
+          });
+          const segments = {
+            containing(i) {
+              const n = Number(i) || 0;
+              return data.find((d) => n >= d.index && n < d.index + d.segment.length);
+            },
+          };
+          segments[Symbol.iterator] = function* () {
+            for (const d of data) yield d;
+          };
+          return segments;
+        };
+        SG.prototype.resolvedOptions = function () {
+          return { locale: this.__locale, granularity: this.__granularity };
+        };
+        SG.supportedLocalesOf = function (l) {
+          return Array.isArray(l) ? l.slice() : l ? [l] : [];
+        };
+        Intl.Segmenter = SG;
+      })();
+
+      (function () {
+        const native = String.prototype.normalize;
+        if (typeof native !== 'function') return;
+        Object.defineProperty(String.prototype, 'normalize', {
+          writable: true,
+          enumerable: false,
+          configurable: true,
+          value: function normalize(form) {
+            const f = form === undefined ? 'NFC' : String(form);
+            if (f !== 'NFC' && f !== 'NFD' && f !== 'NFKC' && f !== 'NFKD') {
+              throw new RangeError(`The normalization form should be one of NFC, NFD, NFKC, NFKD.`);
+            }
+            const self = String(this);
+            if (f === 'NFKC' || f === 'NFKD') {
+              // eslint-disable-next-line no-control-regex
+              if (!/[^\u0000-\u007f]/.test(self)) return self;
+              return native.call(self, f === 'NFKC' ? 'NFC' : 'NFD');
+            }
+            return native.call(self, f);
+          },
+        });
+      })();
 
       const RTF = function RelativeTimeFormat(locales, options) {
         if (!(this instanceof RTF)) {

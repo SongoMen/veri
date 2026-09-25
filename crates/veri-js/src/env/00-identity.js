@@ -25,19 +25,19 @@
       globalThis.__UA_OVERRIDE ||
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
     platform: _NAV.platform || 'MacIntel',
-    language: 'en-US',
-    languages: ['en-US', 'en'],
+    language: globalThis.__LANG_OVERRIDE || 'en-US',
+    languages: globalThis.__LANGS_OVERRIDE || ['en-US', 'en'],
     hardwareConcurrency: _NAV.hardwareConcurrency || 10,
     deviceMemory: _NAV.deviceMemory || 16,
     screenW: _SCR.width || 1512,
     screenH: _SCR.height || 982,
-    availTop: _SCR.availTop ?? 33,
-    availH: _SCR.availHeight || 870,
+    availTop: _SCR.availTop ?? 0,
+    availH: _SCR.availHeight || 982,
     colorDepth: _SCR.colorDepth || 30,
     innerW: 1512,
     innerH: 860,
-    dpr: _MISC.devicePixelRatio || 2,
-    tz: globalThis.__TZ_OVERRIDE || _MISC.timezone || 'America/New_York',
+    dpr: _MISC.devicePixelRatio || 1,
+    tz: globalThis.__TZ_OVERRIDE || 'Europe/Warsaw',
   };
   if (/iPhone|iPad/.test(IDENTITY.ua)) {
     const pad = /iPad/.test(IDENTITY.ua);

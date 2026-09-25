@@ -26,14 +26,18 @@
 //! `CLEARANCE_COOKIE` and most define a `Config`. Only the protection types are
 //! re-exported here, since those are unique.
 
+pub mod akamai;
 pub mod awswaf;
 pub mod cloudflare;
 pub mod datadome;
 pub mod perimeterx;
+pub mod recaptcha;
 pub mod vercel;
 
+pub use akamai::Akamai;
 pub use awswaf::AwsWaf;
 pub use cloudflare::Cloudflare;
 pub use datadome::DataDome;
 pub use perimeterx::PerimeterX;
+pub use recaptcha::Recaptcha;
 pub use vercel::Vercel;

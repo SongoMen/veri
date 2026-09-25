@@ -54,6 +54,10 @@ pub fn holds_cookie(name: &str) -> bool {
     BRIDGE.with(|b| b.borrow().as_ref().is_some_and(|br| br.holds_cookie(name)))
 }
 
+pub fn posted_body_over(min: usize) -> bool {
+    BRIDGE_LOG.with(|l| l.borrow().iter().any(|c| c.method == "POST" && c.request_bytes > min))
+}
+
 pub(super) fn arg(args: &v8::FunctionCallbackArguments, i: i32, s: &mut v8::HandleScope) -> String {
     let a = args.get(i);
     if a.is_null_or_undefined() {
@@ -157,7 +161,27 @@ pub fn host_run(
     let mut tc = v8::TryCatch::new(scope);
     let ran = (|| {
         let code = v8::String::new(&mut tc, &src)?;
-        let script = v8::Script::compile(&mut tc, code, None)?;
+        let origin = if super::inspect::enabled() {
+            let url = if src.len() > 200_000 { "veri://sensor" } else { "veri://run" };
+            v8::String::new(&mut tc, url).map(|resource| {
+                v8::ScriptOrigin::new(
+                    &mut tc,
+                    resource.into(),
+                    0,
+                    0,
+                    true,
+                    -1,
+                    None,
+                    false,
+                    false,
+                    false,
+                    None,
+                )
+            })
+        } else {
+            None
+        };
+        let script = v8::Script::compile(&mut tc, code, origin.as_ref())?;
         script.run(&mut tc)?;
         Some(())
     })();

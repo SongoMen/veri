@@ -1,13 +1,9 @@
 //! Compiling, running, and driving the document to `complete`.
 
 const IDLE_WAIT: usize = 32;
-const IDLE_WAIT_BETWEEN_EVENTS: usize = 6;
 const SETTLED_ROUNDS: usize = 128;
 
 pub fn run(scope: &mut v8::HandleScope, src: &str, name: &str) -> Result<(), String> {
-    // A script with no origin reports as `unknown source` in any stack the page
-    // collects. A page's own inline script has no name either, and prints as a
-    // bare position, so an empty name is what matches.
     run_at(scope, src, name, Some(("", 0, 0)))
 }
 
@@ -64,11 +60,9 @@ pub fn eval_json<T: serde::de::DeserializeOwned + Default>(
 }
 
 fn drive_deadline() -> std::time::Instant {
-    std::time::Instant::now() + std::time::Duration::from_secs(30)
+    std::time::Instant::now() + std::time::Duration::from_secs(15)
 }
 
-/// Rounds to keep pumping after `stop_when` is satisfied, so a challenge that
-/// sets its cookie and then finishes a beacon is not cut off mid-request.
 const GRACE_ROUNDS: usize = 16;
 
 fn pump_until(
@@ -77,7 +71,7 @@ fn pump_until(
     idle_wait: usize,
     until_cookies_settle: bool,
     deadline: std::time::Instant,
-    stop_when: Option<&str>,
+    stop: &super::options::StopWhen,
 ) -> usize {
     let mut total = 0;
     let mut idle = 0;
@@ -85,17 +79,20 @@ fn pump_until(
     let mut since_cookie = 0usize;
     let mut grace = 0usize;
     let mut satisfied = false;
-    // Waiting for a timer's turn is not a round: the budget counts work done,
-    // and a page that paces itself would otherwise spend it all on waiting.
     let mut rounds = 0;
     while rounds < max_rounds && std::time::Instant::now() < deadline {
-        if let Some(name) = stop_when {
-            if satisfied || super::bridge::holds_cookie(name) {
-                satisfied = true;
-                grace += 1;
-                if grace > GRACE_ROUNDS {
-                    break;
-                }
+        let landed = match stop {
+            super::options::StopWhen::Idle => false,
+            super::options::StopWhen::Cookie(name) => super::bridge::holds_cookie(name),
+            super::options::StopWhen::Posted { min_body } => {
+                super::bridge::posted_body_over(*min_body)
+            }
+        };
+        if satisfied || landed {
+            satisfied = true;
+            grace += 1;
+            if grace > GRACE_ROUNDS {
+                break;
             }
         }
         // A framed document has its own queue, and it only advances when we say.
@@ -106,6 +103,11 @@ fn pump_until(
         let ran: usize = if until_cookies_settle {
             let raw = eval(scope, "__drainOnce() + ':' + ((globalThis.__COOKIES_SET||[]).length)");
             let (ran, seen) = raw.split_once(':').unwrap_or(("0", "0"));
+            let waiting: i64 = ran.parse().unwrap_or(0);
+            if waiting < 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
             let seen: usize = seen.parse().unwrap_or(0);
             if seen > cookies {
                 cookies = seen;
@@ -113,7 +115,7 @@ fn pump_until(
             } else if cookies > 0 {
                 since_cookie += 1;
             }
-            ran.parse().unwrap_or(0)
+            waiting as usize
         } else {
             let raw: i64 = eval(scope, "String(__drainOnce())").parse().unwrap_or(0);
             if raw < 0 {
@@ -154,22 +156,18 @@ fn pump_until(
 }
 
 const LIFECYCLE: &[&str] = &[
-    "document.readyState = 'interactive'; __fire('document','readystatechange');",
-    "__fire('document','DOMContentLoaded');",
-    "document.readyState = 'complete'; __fire('document','readystatechange');",
-    "__fire('window','load');",
-    "__fire('window','pageshow');",
+    "globalThis.__DOC_DYN && (globalThis.__DOC_DYN.readyState = 'interactive'); __fire('document','readystatechange');      __fire('document','DOMContentLoaded');",
+    "globalThis.__DOC_DYN && (globalThis.__DOC_DYN.readyState = 'complete'); __fire('document','readystatechange');      __fire('window','load'); __fire('window','pageshow');",
 ];
 
-pub fn drive_to_complete(scope: &mut v8::HandleScope, stop_when: Option<&str>) {
+pub fn drive_to_complete(scope: &mut v8::HandleScope, stop: &super::options::StopWhen) {
     let deadline = drive_deadline();
     scope.perform_microtask_checkpoint();
     for step in LIFECYCLE {
         eval(scope, step);
         scope.perform_microtask_checkpoint();
-        pump_until(scope, 60, IDLE_WAIT_BETWEEN_EVENTS, false, deadline, stop_when);
     }
-    pump_until(scope, budget(), IDLE_WAIT, true, deadline, stop_when);
+    pump_until(scope, budget(), IDLE_WAIT, true, deadline, stop);
 }
 
 fn budget() -> usize {

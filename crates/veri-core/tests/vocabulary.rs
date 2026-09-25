@@ -64,3 +64,32 @@ fn an_origins_own_403_is_not_claimed_as_a_refusal() {
     assert_eq!(unmarked(403, "", r#"{"error":"invalid api key"}"#), Outcome::NotMine);
     assert_eq!(unmarked(403, "", "<html>denied</html>"), Outcome::Blocked);
 }
+
+#[test]
+fn an_unclaimed_403_page_is_something_an_identity_can_fix() {
+    use veri_core::{Headers, Outcome, ResponseParts};
+
+    let html = Headers::new(vec![("content-type".into(), "text/html".into())]);
+    let denied = ResponseParts {
+        status: 403,
+        headers: &html,
+        body: "<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD></HTML>",
+        url: "https://example.test/",
+    };
+
+    assert_eq!(Verdict::from_status(403), Verdict::Other(403));
+    assert!(!Verdict::from_status(403).identity_might_help());
+
+    let v = Verdict::from_outcome(Outcome::from_unmarked(&denied));
+    assert_eq!(v, Some(Verdict::Blocked));
+    assert!(v.unwrap().identity_might_help());
+
+    let json = Headers::new(vec![("content-type".into(), "application/json".into())]);
+    let api = ResponseParts {
+        status: 403,
+        headers: &json,
+        body: r#"{"error":"forbidden"}"#,
+        url: "https://example.test/api",
+    };
+    assert_eq!(Verdict::from_outcome(Outcome::from_unmarked(&api)), None);
+}

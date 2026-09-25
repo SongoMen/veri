@@ -3,6 +3,43 @@
   const RealFunction = globalThis.Function;
   const RealEval = globalThis.eval;
   const realToString = Function.prototype.toString;
+  (function () {
+    const HOST =
+      /^(__runInScope|__loadScriptNow|__HOST_[A-Za-z]*|__drainOnce|__fire|__fireIn|__fireOn|__watch|__maybeLoadFrame|__loadFrameNow|__runInFrame|__driveFrameLifecycle|__pumpFrameInbox|__sealInternals)$/;
+    try {
+      if (Error.stackTraceLimit === undefined || Error.stackTraceLimit < 30) Error.stackTraceLimit = 30;
+      Error.prepareStackTrace = function (err, frames) {
+        const url =
+          globalThis.__ACTIVE_SCRIPT_URL ||
+          (globalThis.location && globalThis.location.href) ||
+          '';
+        let head = err && err.name ? err.name : 'Error';
+        if (err && err.message !== undefined && err.message !== '') head += ': ' + err.message;
+        const out = [head];
+        for (let i = 0; i < frames.length; i++) {
+          const cs = frames[i];
+          let fn = '';
+          try {
+            fn = cs.getFunctionName() || '';
+          } catch (e) {}
+          if (fn && HOST.test(fn)) continue;
+          let file = '';
+          try {
+            file = cs.getFileName() || '';
+          } catch (e) {}
+          if (!file || file === '<anonymous>') file = url;
+          let ln = 0;
+          let col = 0;
+          try {
+            ln = cs.getLineNumber() || 0;
+            col = cs.getColumnNumber() || 0;
+          } catch (e) {}
+          out.push(fn ? '    at ' + fn + ' (' + file + ':' + ln + ':' + col + ')' : '    at ' + file + ':' + ln + ':' + col);
+        }
+        return out.join('\n');
+      };
+    } catch (e) {}
+  })();
 
   // What each wrapper reports from toString(). Without it the page reads back this
   // file rather than the function a browser would have produced.
@@ -132,6 +169,12 @@
   ShimFunction.prototype = RealFunction.prototype;
   Object.defineProperty(ShimFunction, 'name', { value: 'Function', configurable: true });
   globalThis.Function = ShimFunction;
+  Object.defineProperty(RealFunction.prototype, 'constructor', {
+    value: ShimFunction,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
 
   globalThis.__runInScope = function (code) {
     if (typeof __HOST_RUN === 'function') {
@@ -261,9 +304,75 @@
       frontier = next;
     }
   })();
-  // In a browser navigator.userAgent is a getter on Navigator.prototype and the
-  // instance has no own properties at all.
+  function markAllNative() {
+    const seen = new WeakSet();
+    const queue = [];
+    const roots = [
+      globalThis, globalThis.navigator, globalThis.document, globalThis.screen,
+      globalThis.location, globalThis.history, globalThis.performance, globalThis.crypto,
+    ];
+    for (const r of roots) {
+      if (r && (typeof r === 'object' || typeof r === 'function') && !seen.has(r)) {
+        seen.add(r);
+        queue.push([r, 0]);
+      }
+    }
+    let count = 0;
+    while (queue.length && count < 24000) {
+      const item = queue.shift();
+      count += 1;
+      const obj = item[0];
+      const depth = item[1];
+      if (depth > 6) continue;
+      let names;
+      try {
+        names = Object.getOwnPropertyNames(obj);
+      } catch (e) {
+        continue;
+      }
+      for (const n of names) {
+        if (n === '__proto__') continue;
+        let d;
+        try {
+          d = Object.getOwnPropertyDescriptor(obj, n);
+        } catch (e) {
+          continue;
+        }
+        if (!d) continue;
+        const fns = [];
+        if (typeof d.value === 'function') fns.push(d.value);
+        if (typeof d.get === 'function') fns.push(d.get);
+        if (typeof d.set === 'function') fns.push(d.set);
+        for (const fn of fns) {
+          if (seen.has(fn)) continue;
+          seen.add(fn);
+          NATIVE.add(fn);
+          try {
+            const proto = fn.prototype;
+            if (proto && typeof proto === 'object' && !seen.has(proto)) {
+              seen.add(proto);
+              queue.push([proto, depth + 1]);
+            }
+          } catch (e) {}
+        }
+        if (d.value && typeof d.value === 'object' && !seen.has(d.value)) {
+          seen.add(d.value);
+          queue.push([d.value, depth + 1]);
+        }
+      }
+      try {
+        const proto = Object.getPrototypeOf(obj);
+        if (proto && !seen.has(proto)) {
+          seen.add(proto);
+          queue.push([proto, depth + 1]);
+        }
+      } catch (e) {}
+    }
+  }
+  markAllNative();
   (function moveToPrototype() {
+    const noProto = (fn) => ({ m() { return fn.apply(this, arguments); } }).m;
+    globalThis.__DOC_DYN = {};
     const pairs = [
       ['Navigator', globalThis.__RAW_NAVIGATOR],
       ['Screen', globalThis.__RAW_SCREEN],
@@ -278,9 +387,16 @@
       }
       return out;
     };
+    const PUBLIC = {
+      Navigator: 'navigator',
+      Screen: 'screen',
+      Document: 'document',
+      Performance: 'performance',
+    };
     for (const [ctorName, raw] of pairs) {
       const ctor = globalThis[ctorName];
       if (!ctor || !ctor.prototype || !raw) continue;
+      const pub = globalThis[PUBLIC[ctorName]];
       let keys;
       try {
         keys = Object.getOwnPropertyNames(raw);
@@ -291,6 +407,9 @@
       const store = {};
       const canWrite = writableFor(ctorName);
       for (const k of keys) {
+        if (k === 'addEventListener' || k === 'removeEventListener' || k === 'dispatchEvent') {
+          continue;
+        }
         // An own accessor already has real behaviour behind it - document.cookie
         // writes into the jar - so move the descriptor rather than snapshotting
         // what it currently reads.
@@ -305,12 +424,12 @@
             const wrapped = { enumerable: d0.enumerable, configurable: true };
             if (d0.get) {
               const g = d0.get;
-              wrapped.get = function () {
-                if (this !== raw) {
+              wrapped.get = noProto(function () {
+                if (this !== raw && this !== pub) {
                   throw new TypeError('Illegal invocation');
                 }
                 return g.call(raw);
-              };
+              });
               Object.defineProperty(wrapped.get, 'name', {
                 value: 'get ' + k,
                 configurable: true,
@@ -319,10 +438,10 @@
             }
             if (d0.set) {
               const st = d0.set;
-              wrapped.set = function (v) {
-                if (this !== raw) throw new TypeError('Illegal invocation');
+              wrapped.set = noProto(function (v) {
+                if (this !== raw && this !== pub) throw new TypeError('Illegal invocation');
                 return st.call(raw, v);
-              };
+              });
               Object.defineProperty(wrapped.set, 'name', {
                 value: 'set ' + k,
                 configurable: true,
@@ -345,29 +464,32 @@
             Object.defineProperty(ctor.prototype, k, {
               value: v,
               writable: true,
-              enumerable: false,
+              enumerable: true,
               configurable: true,
             });
             NATIVE.add(v);
           } else {
-            store[k] = v;
+            const dynamic = k === 'readyState' || k === 'visibilityState' || k === 'hidden';
+            const back = dynamic ? globalThis.__DOC_DYN : store;
+            back[k] = v;
             const proto = ctor.prototype;
             // Only the object these were lifted from may read them; any other
             // receiver gets what a browser gives, which is a throw.
-            const getter = function () {
-              if (this !== raw) {
+            const getter = noProto(function () {
+              if (this !== raw && this !== pub) {
                 throw new TypeError('Illegal invocation');
               }
-              return store[k];
-            };
+              if (k === 'readyState' && back[k] === 'loading') return 'interactive';
+              return back[k];
+            });
             Object.defineProperty(getter, 'name', { value: 'get ' + k, configurable: true });
             NATIVE.add(getter);
             const desc = { get: getter, enumerable: true, configurable: true };
             if (canWrite.has(k)) {
-              const setter = function (v) {
+              const setter = noProto(function (v) {
                 if (this === proto) throw new TypeError('Illegal invocation');
-                store[k] = v;
-              };
+                back[k] = v;
+              });
               Object.defineProperty(setter, 'name', { value: 'set ' + k, configurable: true });
               NATIVE.add(setter);
               desc.set = setter;
@@ -433,6 +555,37 @@
       };
       walk(globalThis.__DOCUMENT && globalThis.__DOCUMENT.documentElement);
     } catch (e) {}
+  })();
+  (function liftSingletonMethods() {
+    const nav = globalThis.navigator;
+    const targets = [
+      [nav && nav.mediaDevices, 'MediaDevices', 'enumerateDevices'],
+      [nav && nav.permissions, 'Permissions', 'query'],
+      [nav && nav.userAgentData, 'NavigatorUAData', 'getHighEntropyValues'],
+      [globalThis.speechSynthesis, 'SpeechSynthesis', 'getVoices'],
+    ];
+    for (const [obj, ctorName, method] of targets) {
+      try {
+        const ctor = globalThis[ctorName];
+        if (!obj || !ctor || !ctor.prototype) continue;
+        const d = Object.getOwnPropertyDescriptor(obj, method);
+        if (!d) continue;
+        if (typeof d.value === 'function' && 'prototype' in d.value) {
+          const orig = d.value;
+          d.value = ({ m() { return orig.apply(this, arguments); } }).m;
+          try {
+            Object.defineProperty(d.value, 'name', { value: method, configurable: true });
+          } catch (e) {}
+          if (NATIVE.has(orig)) NATIVE.add(d.value);
+        }
+        d.enumerable = false;
+        Object.defineProperty(ctor.prototype, method, d);
+        delete obj[method];
+        if (Object.getPrototypeOf(obj) !== ctor.prototype) {
+          Object.setPrototypeOf(obj, ctor.prototype);
+        }
+      } catch (e) {}
+    }
   })();
 
   (function realEventConstructors() {
@@ -531,16 +684,22 @@
         } catch (e) {}
         for (const k of Object.keys(spec)) data[k] = k in d ? d[k] : spec[k];
         if ('detail' in d) data.detail = d.detail;
+        data.isTrusted = false;
         EV.set(this, data);
-        // A constructed event is not trusted, and it is the one own property.
-        Object.defineProperty(this, 'isTrusted', {
-          value: false,
-          writable: false,
-          enumerable: true,
-          configurable: false,
-        });
       };
       Ctor.prototype = proto;
+      if (name === 'Event') {
+        try {
+          Object.defineProperty(proto, 'isTrusted', {
+            get() {
+              const dd = EV.get(this);
+              return dd ? !!dd.isTrusted : false;
+            },
+            enumerable: true,
+            configurable: true,
+          });
+        } catch (e) {}
+      }
       try {
         Object.defineProperty(proto, 'constructor', {
           value: Ctor,
@@ -846,7 +1005,6 @@
       onremovetrack: null,
     });
     constant('BroadcastChannel', { name: '', onmessage: null, onmessageerror: null });
-    constant('SharedWorker', { onerror: null });
     constant('OffscreenCanvas', { oncontextlost: null, oncontextrestored: null });
     constant('IntersectionObserver', {
       root: null,
@@ -871,7 +1029,6 @@
     });
     constant('File', { lastModified: 0, name: '', webkitRelativePath: '' });
     constant('ImageData', { pixelFormat: 'rgba-unorm8' });
-    constant('URL', { username: '', password: '' });
     try {
       if (!globalThis.__IS_FRAME) {
         Object.defineProperty(globalThis, 'frameElement', {
@@ -901,11 +1058,6 @@
     } catch (e) {}
 
     constant('WebSocket', { readyState: 0, url: '' });
-    constant('SharedWorker', {
-      port: function () {
-        return { postMessage() {}, start() {}, close() {}, onmessage: null };
-      },
-    });
     constant('File', { lastModifiedDate: null });
     constant('Notification', {
       onclick: null,
@@ -1339,20 +1491,91 @@
     delete globalThis.__NATIVE_PENDING;
   } catch (e) {}
 
-  const shimToString = function toString() {
-    if (NATIVE.has(this)) return 'function ' + (this.name || '') + '() { [native code] }';
-    const src = SOURCE.get(this);
-    if (src !== undefined) return src;
-    return realToString.call(this);
-  };
+  const shimToString = {
+    toString() {
+      if (NATIVE.has(this)) return 'function ' + (this.name || '') + '() { [native code] }';
+      const src = SOURCE.get(this);
+      if (src !== undefined) return src;
+      return realToString.call(this);
+    },
+  }.toString;
   Object.defineProperty(shimToString, 'name', { value: 'toString', configurable: true });
   NATIVE.add(shimToString);
   Function.prototype.toString = shimToString;
+  markAllNative();
+  (function stripIntlMethodPrototypes() {
+    try {
+      const I = globalThis.Intl;
+      if (!I) return;
+      for (const cn of Object.getOwnPropertyNames(I)) {
+        let C;
+        try {
+          C = I[cn];
+        } catch (e) {
+          continue;
+        }
+        if (typeof C !== 'function' || !C.prototype) continue;
+        const p = C.prototype;
+        for (const k of Object.getOwnPropertyNames(p)) {
+          if (k === 'constructor') continue;
+          let d;
+          try {
+            d = Object.getOwnPropertyDescriptor(p, k);
+          } catch (e) {
+            continue;
+          }
+          if (!d || !d.configurable || typeof d.value !== 'function' || !('prototype' in d.value)) {
+            continue;
+          }
+          const orig = d.value;
+          d.value = ({ m() { return orig.apply(this, arguments); } }).m;
+          try {
+            Object.defineProperty(d.value, 'name', { value: k, configurable: true });
+          } catch (e) {}
+          if (NATIVE.has(orig)) NATIVE.add(d.value);
+          try {
+            Object.defineProperty(p, k, d);
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  })();
 })();
 
-// The window's own-property list is a fingerprint in its own right: a challenge
-// enumerates it and reports every name it did not expect. V8's global carries
-// members Chrome inherits, and lacks a handful Chrome owns.
+(function realConsoleFormatting() {
+  const c = globalThis.console;
+  if (!c) return;
+  for (const name of Object.getOwnPropertyNames(c)) {
+    let orig;
+    try {
+      orig = c[name];
+    } catch (e) {
+      continue;
+    }
+    if (typeof orig !== 'function') continue;
+    const holder = {
+      [name]() {
+        for (let i = 0; i < arguments.length; i++) {
+          const a = arguments[i];
+          if (a && (typeof a === 'object' || typeof a === 'function')) {
+            try {
+              for (const k in a) void k;
+            } catch (e) {}
+          }
+        }
+        return orig.apply(this, arguments);
+      },
+    };
+    const w = holder[name];
+    try {
+      if (globalThis.__markNativeFn) globalThis.__markNativeFn(w);
+    } catch (e) {}
+    try {
+      c[name] = w;
+    } catch (e) {}
+  }
+})();
+
 (function () {
   const proto = Object.getPrototypeOf(globalThis);
 
@@ -1372,20 +1595,78 @@
     } catch (e) {}
   }
 
-  // window -> Window.prototype -> WindowProperties -> EventTarget.prototype ->
-  // Object.prototype. Without it `window instanceof Window` is false, which no
-  // browser has ever answered.
   const ET = globalThis.EventTarget;
   if (ET && ET.prototype) {
-    for (const k of ['addEventListener', 'removeEventListener', 'dispatchEvent', 'when']) {
+    const __ET_BUCKETS = new WeakMap();
+    let __etSeq = 0;
+    const __bucketOf = (self) => {
+      if (self === globalThis || self === globalThis.window) return 'window';
+      if (self === globalThis.document) return 'document';
+      if (
+        self &&
+        (typeof self === 'object' || typeof self === 'function') &&
+        ET.prototype.isPrototypeOf(self)
+      ) {
+        let b = __ET_BUCKETS.get(self);
+        if (!b) __ET_BUCKETS.set(self, (b = 'et:' + ++__etSeq));
+        return b;
+      }
+      return null;
+    };
+    const __illegal = () => {
+      throw new TypeError('Illegal invocation');
+    };
+    const __etMethods = {
+      addEventListener(type, listener) {
+        const b = __bucketOf(this);
+        if (b === null) __illegal();
+        if (listener != null) globalThis.__listenerFactory(b).add(String(type), listener);
+      },
+      removeEventListener(type, listener) {
+        const b = __bucketOf(this);
+        if (b === null) __illegal();
+        if (listener != null) globalThis.__listenerFactory(b).remove(String(type), listener);
+      },
+      dispatchEvent(event) {
+        const b = __bucketOf(this);
+        if (b === null) __illegal();
+        if (!event) return true;
+        const type = String(event.type || '');
+        if (!type) return true;
+        try {
+          globalThis.__defineOwn(event, 'target', this);
+          globalThis.__defineOwn(event, 'currentTarget', this);
+          globalThis.__defineOwn(event, 'eventPhase', 2);
+        } catch (e) {}
+        globalThis.__fire(b, type, event);
+        return !event.defaultPrevented;
+      },
+    };
+    for (const k of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
       try {
-        const own = Object.getOwnPropertyDescriptor(globalThis, k);
-        // The profile already put a stand-in here. The working implementation
-        // is the one on the global, so it wins.
-        if (own) Object.defineProperty(ET.prototype, k, own);
+        Object.defineProperty(ET.prototype, k, {
+          value: __etMethods[k],
+          writable: true,
+          enumerable: false,
+          configurable: true,
+        });
+        // window and document must INHERIT the shared method, not own a copy.
         delete globalThis[k];
+        if (globalThis.document) {
+          try {
+            delete globalThis.document[k];
+          } catch (e) {}
+        }
+        if (globalThis.__markNativeFn) globalThis.__markNativeFn(__etMethods[k]);
       } catch (e) {}
     }
+    try {
+      const wd = Object.getOwnPropertyDescriptor(globalThis, 'when');
+      if (wd) {
+        Object.defineProperty(ET.prototype, 'when', wd);
+        delete globalThis.when;
+      }
+    } catch (e) {}
     const W = globalThis.Window;
     if (W && W.prototype) {
       try {
@@ -1507,4 +1788,52 @@
     const P = globalThis.Performance;
     if (P && P.prototype) delete P.prototype.memory;
   } catch (e) {}
+})();
+(function fixScannedArities() {
+  const setLen = (fn, n) => {
+    try {
+      if (typeof fn === 'function' && fn.length !== n) {
+        Object.defineProperty(fn, 'length', { value: n, configurable: true });
+      }
+    } catch (e) {}
+  };
+  const nav = globalThis.navigator;
+  const P = (C) => (typeof C === 'function' && C.prototype) || null;
+  const at = (o, k) => (o && o[k]) || null;
+  const pairs = [
+    [at(at(nav, 'permissions'), 'query'), 1],
+    [at(at(nav, 'userAgentData'), 'getHighEntropyValues'), 1],
+    [at(at(nav, 'mediaDevices'), 'enumerateDevices'), 0],
+    [at(globalThis.speechSynthesis, 'getVoices'), 0],
+    [globalThis.matchMedia, 1],
+    [at(P(globalThis.Permissions), 'query'), 1],
+    [at(P(globalThis.NavigatorUAData), 'getHighEntropyValues'), 1],
+    [at(P(globalThis.MediaDevices), 'enumerateDevices'), 0],
+    [at(P(globalThis.SpeechSynthesis), 'getVoices'), 0],
+    [at(P(globalThis.Navigator), 'sendBeacon'), 1],
+    [at(nav, 'sendBeacon'), 1],
+    [at(P(globalThis.WebGLRenderingContext), 'getParameter'), 1],
+    [at(P(globalThis.WebGLRenderingContext), 'getExtension'), 1],
+    [at(P(globalThis.WebGL2RenderingContext), 'getParameter'), 1],
+    [at(P(globalThis.HTMLCanvasElement), 'toDataURL'), 0],
+    [at(globalThis.Intl && globalThis.Intl.DateTimeFormat && globalThis.Intl.DateTimeFormat.prototype, 'resolvedOptions'), 0],
+    ...[
+      'AnimationEvent', 'ClipboardEvent', 'CloseEvent', 'CompositionEvent', 'CustomEvent',
+      'DragEvent', 'ErrorEvent', 'Event', 'FocusEvent', 'InputEvent', 'KeyboardEvent',
+      'MediaQueryListEvent', 'MessageEvent', 'MouseEvent', 'PointerEvent', 'ProgressEvent',
+      'TouchEvent', 'TransitionEvent', 'UIEvent', 'WheelEvent',
+    ].map((n) => [globalThis[n], 1]),
+    [globalThis.DOMException, 0],
+    [globalThis.DOMPoint, 0],
+    [globalThis.DOMRect, 0],
+    [globalThis.ImageData, 2],
+    [globalThis.createImageBitmap, 1],
+    [at(P(globalThis.Document), 'createNodeIterator'), 1],
+    [at(P(globalThis.Performance), 'clearMarks'), 0],
+    [at(P(globalThis.Performance), 'clearMeasures'), 0],
+    [at(P(globalThis.Performance), 'getEntriesByName'), 1],
+    [at(P(globalThis.Performance), 'measure'), 1],
+    [at(globalThis.CSS, 'supports'), 1],
+  ];
+  for (const pair of pairs) setLen(pair[0], pair[1]);
 })();

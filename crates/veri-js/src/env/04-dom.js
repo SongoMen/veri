@@ -1,6 +1,10 @@
 (function () {
   const __SELF = new WeakMap();
 
+  if (!('__ACTIVE_SCRIPT_URL' in globalThis)) {
+    globalThis.__ACTIVE_SCRIPT_URL = undefined;
+  }
+
   function __compound(el, sel) {
     if (!el || el.nodeType !== 1) return false;
     if (sel === '*' || sel === '') return true;
@@ -388,16 +392,258 @@
     return out;
   };
 
+  globalThis.__collection = function __collection(arr, tag) {
+    const items = Array.prototype.slice.call(arr || []);
+    const C = globalThis[tag];
+    const list = Object.create((C && C.prototype) || Object.prototype);
+    for (let i = 0; i < items.length; i++) {
+      Object.defineProperty(list, i, { value: items[i], enumerable: true, configurable: true });
+    }
+    const own = (k, v) => Object.defineProperty(list, k, { value: v, configurable: true });
+    own('length', items.length);
+    own('item', (i) => items[i >>> 0] || null);
+    if (tag === 'HTMLCollection') {
+      own('namedItem', (n) => items.find((e) => e && (e.id === n || e.name === n)) || null);
+    } else {
+      own('forEach', function (cb, thisArg) {
+        for (let i = 0; i < items.length; i++) cb.call(thisArg, items[i], i, list);
+      });
+      own('entries', function* () {
+        for (let i = 0; i < items.length; i++) yield [i, items[i]];
+      });
+      own('keys', function* () {
+        for (let i = 0; i < items.length; i++) yield i;
+      });
+      own('values', function* () {
+        for (const v of items) yield v;
+      });
+    }
+    own(Symbol.iterator, function* () {
+      for (const v of items) yield v;
+    });
+    // If the interface prototype does not carry the brand, stamp it directly so
+    // `Object.prototype.toString.call` still names it.
+    try {
+      if (Object.prototype.toString.call(list) === '[object Object]') {
+        Object.defineProperty(list, Symbol.toStringTag, { value: tag, configurable: true });
+      }
+    } catch (e) {}
+    return list;
+  };
+
+  const __CSS_NAMED_COLORS = new Set(
+    (
+      'aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue ' +
+      'blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk ' +
+      'crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki ' +
+      'darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen ' +
+      'darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue ' +
+      'dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite ' +
+      'gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki ' +
+      'lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan ' +
+      'lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen ' +
+      'lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen ' +
+      'magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen ' +
+      'mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream ' +
+      'mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid ' +
+      'palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum ' +
+      'powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown ' +
+      'seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen ' +
+      'steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow ' +
+      'yellowgreen transparent currentcolor'
+    ).split(/\s+/),
+  );
+  const __CSS_COLOR_PROPS = new Set([
+    'color',
+    'background-color',
+    'border-color',
+    'border-top-color',
+    'border-right-color',
+    'border-bottom-color',
+    'border-left-color',
+    'outline-color',
+    'text-decoration-color',
+    'caret-color',
+    'column-rule-color',
+    'text-emphasis-color',
+    'fill',
+    'stroke',
+    'stop-color',
+    'flood-color',
+    'lighting-color',
+    '-webkit-text-fill-color',
+    '-webkit-text-stroke-color',
+  ]);
+  const __CSS_WIDE = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer']);
+  const __alphaStr = (a01) => {
+    const byte = Math.round(a01 * 255);
+    for (let d = 1; d <= 3; d++) {
+      const t = a01.toFixed(d);
+      if (Math.round(parseFloat(t) * 255) === byte) return String(+t);
+    }
+    return String(+a01.toFixed(3));
+  };
+  const __rgbOut = (r, g, b, a) =>
+    a === undefined || a >= 1
+      ? `rgb(${r}, ${g}, ${b})`
+      : `rgba(${r}, ${g}, ${b}, ${__alphaStr(Math.max(0, Math.min(1, a)))})`;
+  const __hslToRgb = (h, s, l) => {
+    h = (((h % 360) + 360) % 360) / 360;
+    s /= 100;
+    l /= 100;
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const f = (t) => {
+      t = ((t % 1) + 1) % 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
+  };
+  const __CSS_SYSTEM_COLORS = {
+    activeborder: [255, 255, 255],
+    activecaption: [204, 204, 204],
+    activetext: [255, 0, 0],
+    appworkspace: [255, 255, 255],
+    background: [99, 99, 206],
+    buttonborder: [118, 118, 118],
+    buttonface: [239, 239, 239],
+    buttonhighlight: [221, 221, 221],
+    buttonshadow: [136, 136, 136],
+    buttontext: [0, 0, 0],
+    canvas: [255, 255, 255],
+    canvastext: [0, 0, 0],
+    captiontext: [0, 0, 0],
+    field: [255, 255, 255],
+    fieldtext: [0, 0, 0],
+    graytext: [128, 128, 128],
+    highlight: [181, 213, 255],
+    highlighttext: [0, 0, 0],
+    inactiveborder: [255, 255, 255],
+    inactivecaption: [255, 255, 255],
+    inactivecaptiontext: [0, 0, 0],
+    infobackground: [251, 252, 197],
+    infotext: [0, 0, 0],
+    linktext: [0, 0, 238],
+    mark: [255, 255, 0],
+    marktext: [0, 0, 0],
+    menu: [247, 247, 247],
+    menutext: [0, 0, 0],
+    scrollbar: [255, 255, 255],
+    threeddarkshadow: [102, 102, 102],
+    threedface: [239, 239, 239],
+    threedhighlight: [221, 221, 221],
+    threedlightshadow: [192, 192, 192],
+    threedshadow: [136, 136, 136],
+    visitedtext: [85, 26, 139],
+    window: [255, 255, 255],
+    windowframe: [204, 204, 204],
+    windowtext: [0, 0, 0],
+    selecteditem: [181, 213, 255],
+    selecteditemtext: [0, 0, 0],
+    accentcolor: [0, 103, 244],
+    accentcolortext: [255, 255, 255],
+  };
+  globalThis.__cssColorNorm = function __cssColorNorm(v) {
+    const s = String(v).trim();
+    const low = s.toLowerCase();
+    if (__CSS_WIDE.has(low)) return low;
+    if (Object.prototype.hasOwnProperty.call(__CSS_SYSTEM_COLORS, low)) {
+      const c = __CSS_SYSTEM_COLORS[low];
+      return __rgbOut(c[0], c[1], c[2]);
+    }
+    if (__CSS_NAMED_COLORS.has(low)) return low;
+    let m = /^#([0-9a-fA-F]+)$/.exec(s);
+    if (m) {
+      const x = m[1];
+      if (x.length !== 3 && x.length !== 4 && x.length !== 6 && x.length !== 8) return null;
+      const short = x.length <= 4;
+      const at = (i) => parseInt(short ? x[i] + x[i] : x.substr(i * 2, 2), 16);
+      const hasA = x.length === 4 || x.length === 8;
+      return __rgbOut(at(0), at(1), at(2), hasA ? at(3) / 255 : undefined);
+    }
+    m = /^rgba?\(([^)]*)\)$/i.exec(s);
+    if (m) {
+      const raw = m[1]
+        .trim()
+        .split(/[\s,\/]+/)
+        .filter((p) => p !== '');
+      if (raw.length < 3) return null;
+      const chan = (t) =>
+        /%$/.test(t) ? Math.round((parseFloat(t) / 100) * 255) : Math.round(parseFloat(t));
+      const r = chan(raw[0]);
+      const g = chan(raw[1]);
+      const b = chan(raw[2]);
+      if ([r, g, b].some((n) => isNaN(n))) return null;
+      let a;
+      if (raw.length >= 4) {
+        a = /%$/.test(raw[3]) ? parseFloat(raw[3]) / 100 : parseFloat(raw[3]);
+        if (isNaN(a)) return null;
+      }
+      return __rgbOut(r, g, b, a);
+    }
+    // Legacy hsl/hsla serialise as rgb in a browser.
+    m = /^hsla?\(([^)]*)\)$/i.exec(s);
+    if (m) {
+      const raw = m[1]
+        .trim()
+        .split(/[\s,\/]+/)
+        .filter((p) => p !== '');
+      if (raw.length < 3) return null;
+      const h = parseFloat(raw[0]);
+      const sat = parseFloat(raw[1]);
+      const lit = parseFloat(raw[2]);
+      if ([h, sat, lit].some((n) => isNaN(n))) return null;
+      const rgb = __hslToRgb(h, sat, lit);
+      let a;
+      if (raw.length >= 4) {
+        a = /%$/.test(raw[3]) ? parseFloat(raw[3]) / 100 : parseFloat(raw[3]);
+        if (isNaN(a)) return null;
+      }
+      return __rgbOut(rgb[0], rgb[1], rgb[2], a);
+    }
+    // The modern colour functions keep their own syntax.
+    if (/^(hwb|lab|lch|oklab|oklch|color)\(/i.test(low)) return s;
+    return null;
+  };
+
+  globalThis.__requireNode = function __requireNode(c, method, parent) {
+    if (!c || typeof c !== 'object' || typeof c.nodeType !== 'number') {
+      throw new TypeError(
+        `Failed to execute '${method}' on 'Node': parameter 1 is not of type 'Node'.`,
+      );
+    }
+    for (let n = parent, hops = 0; n && hops < 512; n = n.parentNode, hops++) {
+      if (n === c) {
+        throw new (globalThis.DOMException || Error)(
+          `Failed to execute '${method}' on 'Node': The new child element contains the parent.`,
+          'HierarchyRequestError',
+        );
+      }
+    }
+  };
+
+  globalThis.__brandNode = function __brandNode(node, iface) {
+    try {
+      const C = globalThis[iface];
+      if (C && C.prototype) Object.setPrototypeOf(node, C.prototype);
+    } catch (e) {}
+    return node;
+  };
+
   globalThis.__LISTENERS = { window: {}, document: {} };
   globalThis.__listenerFactory = listenerFactory;
   function listenerFactory(bucket) {
     return {
       add(type, fn) {
         if (typeof fn !== 'function' && !(fn && typeof fn.handleEvent === 'function')) return;
-        (globalThis.__LISTENERS[bucket][type] ||= []).push(fn);
+        ((globalThis.__LISTENERS[bucket] ||= {})[type] ||= []).push(fn);
       },
       remove(type, fn) {
-        const l = globalThis.__LISTENERS[bucket][type];
+        const bkt = globalThis.__LISTENERS[bucket];
+        const l = bkt && bkt[type];
         if (l) {
           const i = l.indexOf(fn);
           if (i >= 0) l.splice(i, 1);
@@ -407,21 +653,26 @@
   }
   globalThis.__fire = function (bucket, type, extra) {
     const l = (globalThis.__LISTENERS[bucket][type] || []).slice();
-    const ev = Object.assign(
-      {
-        type,
-        target: bucket === 'window' ? globalThis.window : globalThis.document,
-        currentTarget: bucket === 'window' ? globalThis.window : globalThis.document,
-        bubbles: true,
-        cancelable: false,
-        isTrusted: true,
-        timeStamp: performance.now(),
-        preventDefault() {},
-        stopPropagation() {},
-        stopImmediatePropagation() {},
-      },
-      extra || {},
-    );
+    let ev;
+    if (extra && globalThis.Event && extra instanceof globalThis.Event) {
+      ev = extra;
+    } else {
+      ev = Object.assign(
+        {
+          type,
+          target: bucket === 'window' ? globalThis.window : globalThis.document,
+          currentTarget: bucket === 'window' ? globalThis.window : globalThis.document,
+          bubbles: true,
+          cancelable: false,
+          isTrusted: true,
+          timeStamp: performance.now(),
+          preventDefault() {},
+          stopPropagation() {},
+          stopImmediatePropagation() {},
+        },
+        extra || {},
+      );
+    }
     let n = 0;
     for (const fn of l) {
       try {
@@ -467,16 +718,21 @@
   }
 
   function __boxRect(b) {
+    // Coerce to numbers: an undefined width/height (an element veri never laid
+    // out) would otherwise make the sensor's arithmetic on the rect NaN, and a
+    // real DOMRect field is always a number.
+    const w = +(b && b.width) || 0;
+    const h = +(b && b.height) || 0;
     return __tag(
       {
         x: 0,
         y: 0,
-        width: b.width,
-        height: b.height,
+        width: w,
+        height: h,
         top: 0,
         left: 0,
-        right: b.width,
-        bottom: b.height,
+        right: w,
+        bottom: h,
       },
       'DOMRect',
     );
@@ -919,8 +1175,22 @@
       }
       const el = __CTX_EL.get(row.i);
       if (!el) continue;
+      const body = row.m || {};
+      if (body.__portMsg) {
+        if (globalThis.__portDeliver) {
+          globalThis.__portDeliver(body.__portMsg.id, body.__portMsg.data);
+        }
+        continue;
+      }
       const view = __frameWindow(el);
-      const ev = __messageEvent(row.m && row.m.data, __frameOrigin(view), view);
+      const back = (id, payload) => {
+        try {
+          __HOST_FRAME_POST(row.i, JSON.stringify({ __portMsg: { id, data: payload } }));
+        } catch (e) {}
+      };
+      const ev = __messageEvent(body.data, __frameOrigin(view, el), view);
+      ev.ports = globalThis.__portsIn ? globalThis.__portsIn(body.__ports, back) : [];
+      for (const p of ev.ports) p.start();
       __deliver('window', globalThis.onmessage, ev);
     }
     return rows.length;
@@ -958,11 +1228,17 @@
   }
 
   /// `iframe.contentWindow.postMessage(...)` from the page.
-  globalThis.__postToFrame = function __postToFrame(el, data, origin) {
+  globalThis.__postToFrame = function __postToFrame(el, data, origin, transfer) {
     const ctx = __FRAME_CTX.get(el);
     if (ctx !== undefined && typeof __HOST_FRAME_POST === 'function') {
+      const toFrame = (id, payload) => {
+        try {
+          __HOST_FRAME_POST(ctx, JSON.stringify({ __portMsg: { id, data: payload } }));
+        } catch (e) {}
+      };
+      const ports = globalThis.__portsOut ? globalThis.__portsOut(transfer, toFrame) : [];
       try {
-        __HOST_FRAME_POST(ctx, JSON.stringify({ data, origin: __PAGE_ORIGIN() }));
+        __HOST_FRAME_POST(ctx, JSON.stringify({ data, origin: __PAGE_ORIGIN(), __ports: ports }));
       } catch (e) {}
       return;
     }
@@ -998,12 +1274,21 @@
     return proxy;
   }
 
-  function __frameOrigin(view) {
+  // A message from a frame carries the *frame's* origin. Falling back to the
+  // page's was wrong in a way a receiver checks: reCAPTCHA drops a setup message
+  // whose origin is not its own, so the handshake never completed and the parent
+  // never asked for a token. The element's src is the authority when the view
+  // has not had its location assigned yet.
+  function __frameOrigin(view, el) {
     try {
-      return view.location.origin || __PAGE_ORIGIN();
-    } catch (e) {
-      return __PAGE_ORIGIN();
-    }
+      const o = view && view.location && view.location.origin;
+      if (o) return o;
+    } catch (e) {}
+    try {
+      const raw = el && (el.src || el.getAttribute('src'));
+      if (raw) return new globalThis.URL(String(raw), globalThis.location.href).origin;
+    } catch (e) {}
+    return __PAGE_ORIGIN();
   }
 
   function __PAGE_ORIGIN() {
@@ -1048,6 +1333,10 @@
           copy[k] = real[k];
         } catch (e) {}
       }
+      try {
+        if (globalThis.__markNativeFn) __markNativeFn(copy);
+        if (globalThis.__markNative) __markNative(copy);
+      } catch (e) {}
       own[name] = copy;
     } catch (e) {}
   }
@@ -1093,7 +1382,7 @@
     own.addEventListener = (t, f) => listeners.add(t, f);
     own.removeEventListener = (t, f) => listeners.remove(t, f);
     own.dispatchEvent = () => true;
-    own.postMessage = (data, origin) => __postToFrame(el, data, origin);
+    own.postMessage = (data, origin, transfer) => __postToFrame(el, data, origin, transfer);
     own.parent = __framesParent(view);
     own.top = own.parent;
     __FRAME_WINDOWS.set(el, view);
@@ -1108,10 +1397,22 @@
       nodeName: T,
       nodeType: 1,
       namespaceURI: 'http://www.w3.org/1999/xhtml',
+      prefix: null,
+      localName: T.toLowerCase(),
+      ...(T === 'IFRAME' ? { srcdoc: '' } : {}),
+      get ownerDocument() {
+        return globalThis.document || null;
+      },
       __style: (function () {
         const props = {};
+        const priorities = {};
         const kebab = (k) => String(k).replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+        const norm = (k) => {
+          const s = String(k);
+          return s.slice(0, 2) === '--' ? s : kebab(s);
+        };
         const isCss = (k) => {
+          if (String(k).slice(0, 2) === '--') return true;
           if (!globalThis.__CSS_SET) {
             const set = new Set();
             for (const n of globalThis.__CSS_PROPS || globalThis.__CSS_LONGHAND || []) {
@@ -1128,23 +1429,35 @@
           return globalThis.__CSS_SET.has(kebab(k)) || globalThis.__CSS_SET.has(String(k));
         };
         const api = {
-          setProperty(k, v) {
+          setProperty(k, v, priority) {
             if (kebab(k) === 'font-family' && globalThis.__noteFont) {
               try {
                 __noteFont(String(v));
               } catch (e) {}
             }
-            if (isCss(k)) props[kebab(k)] = String(v);
+            if (!isCss(k)) return;
+            const nk = norm(k);
+            let val = String(v);
+            if (__CSS_COLOR_PROPS.has(nk)) {
+              const c = globalThis.__cssColorNorm(val);
+              if (c === null) return; // an unparseable colour is dropped, not kept
+              val = c;
+            }
+            props[nk] = val;
+            if (/important/i.test(String(priority || ''))) priorities[nk] = 'important';
+            else delete priorities[nk];
           },
           getPropertyValue(k) {
-            return props[kebab(k)] || '';
+            return props[norm(k)] || '';
           },
-          getPropertyPriority() {
-            return '';
+          getPropertyPriority(k) {
+            return priorities[norm(k)] || '';
           },
           removeProperty(k) {
-            const v = props[kebab(k)] || '';
-            delete props[kebab(k)];
+            const nk = norm(k);
+            const v = props[nk] || '';
+            delete props[nk];
+            delete priorities[nk];
             return v;
           },
           item(i) {
@@ -1158,17 +1471,36 @@
           },
           get cssText() {
             return Object.keys(props)
-              .map((k) => k + ': ' + props[k] + ';')
+              .map((k) => k + ': ' + props[k] + (priorities[k] ? ' !important' : '') + ';')
               .join(' ');
           },
           set cssText(v) {
+            for (const key of Object.keys(props)) delete props[key];
+            for (const key of Object.keys(priorities)) delete priorities[key];
             for (const decl of String(v).split(';')) {
               const at = decl.indexOf(':');
               if (at <= 0) continue;
               const k = decl.slice(0, at).trim();
+              let value = decl.slice(at + 1).trim();
+              let priority = '';
+              const bang = /\s*!\s*important\s*$/i.exec(value);
+              if (bang) {
+                priority = 'important';
+                value = value.slice(0, bang.index).trim();
+              }
               // Same rule as setProperty: a declaration a browser cannot parse
               // is dropped, not kept.
-              if (isCss(k)) props[kebab(k)] = decl.slice(at + 1).trim();
+              if (isCss(k)) {
+                const nk = norm(k);
+                let val = value;
+                if (__CSS_COLOR_PROPS.has(nk)) {
+                  const c = globalThis.__cssColorNorm(val);
+                  if (c === null) continue; // unparseable colour is dropped, as in setProperty
+                  val = c;
+                }
+                props[nk] = val;
+                if (priority) priorities[nk] = 'important';
+              }
             }
           },
         };
@@ -1193,7 +1525,14 @@
               } catch (e) {}
             }
             if (isCss(k)) {
-              props[kebab(k)] = String(v);
+              const nk = kebab(k);
+              let val = String(v);
+              if (__CSS_COLOR_PROPS.has(nk)) {
+                const c = globalThis.__cssColorNorm(val);
+                if (c === null) return true; // invalid colour: assignment is a no-op
+                val = c;
+              }
+              props[nk] = val;
               return true;
             }
             return Reflect.set(t, k, String(v));
@@ -1254,14 +1593,38 @@
       set id(v) {
         this.attributes.id = String(v);
       },
-      outerHTML: '',
+      // Was a static empty string, so a page reading an element's own markup got
+      // nothing where a browser gives the serialised tag. The node serialiser
+      // already exists; this just points it at the element itself.
+      get outerHTML() {
+        try {
+          return __serializeNode(__SELF.get(this) || this);
+        } catch (e) {
+          return '';
+        }
+      },
+      set outerHTML(html) {
+        const parent = this.parentNode;
+        if (!parent) return;
+        try {
+          const nodes = __parseHtml(String(html));
+          const idx = parent.childNodes.indexOf(this);
+          for (const n of nodes) {
+            if (idx >= 0) parent.insertBefore(n, this);
+            else parent.appendChild(n);
+          }
+          parent.removeChild(this);
+        } catch (e) {}
+      },
       textContent: '',
       value: '',
       // Reflected both ways. Assigning the property alone used to leave the
       // content attribute empty, so getAttribute('src') answered null on an
       // element that plainly had one.
       get src() {
-        return this.attributes.src || '';
+        const raw = this.attributes.src;
+        if (raw === undefined || raw === null || raw === '') return '';
+        return __toAbsolute(raw);
       },
       set src(v) {
         this.attributes.src = String(v);
@@ -1307,6 +1670,12 @@
           __maybeLoadScript(this);
           __maybeLoadFrame(this);
         }
+        if (k === 'srcdoc' && this.tagName === 'IFRAME') {
+          try {
+            this.__srcdoc = String(v);
+          } catch (e) {}
+          __maybeLoadFrame(this);
+        }
         if (k === 'style') {
           try {
             this.style.cssText = String(v);
@@ -1317,20 +1686,32 @@
         }
       },
       getAttribute(k) {
+        // `style` reflects the live declaration: setting `el.style.color` must
+        // show up in `getAttribute('style')`, which read the attribute map only.
+        if (k === 'style') {
+          const ct = this.__style ? this.__style.cssText : '';
+          return ct || ('style' in this.attributes ? this.attributes.style : null);
+        }
         return k in this.attributes ? this.attributes[k] : null;
       },
       removeAttribute(k) {
         delete this.attributes[k];
+        if (k === 'style' && this.__style) this.__style.cssText = '';
       },
       hasAttribute(k) {
+        if (k === 'style')
+          return !!(this.__style && this.__style.length) || 'style' in this.attributes;
         return k in this.attributes;
       },
       getAttributeNames() {
-        return Object.keys(this.attributes);
+        const names = Object.keys(this.attributes);
+        if (this.__style && this.__style.length && names.indexOf('style') < 0) names.push('style');
+        return names;
       },
 
       appendChild(c) {
-        if (c) {
+        __requireNode(c, 'appendChild', this);
+        {
           try {
             const owner = __SELF.get(this) || this;
             c.parentNode = owner;
@@ -1340,14 +1721,28 @@
         this.childNodes.push(c);
         if (c && c.nodeType === 1) this.children.push(c);
         __maybeLoadScript(c);
+        // A srcdoc iframe has no src to trigger loading, so it loads on connect,
+        // the way a browser runs it once it is in the document. Without this an
+        // anti-bot's in-frame collection never executes.
+        try {
+          if (c && c.tagName === 'IFRAME') __maybeLoadFrame(c);
+        } catch (e) {}
         try {
           __notifyMutation(__SELF.get(this) || this, { type: 'childList', addedNodes: [c] });
         } catch (e) {}
         return c;
       },
       insertBefore(c, ref) {
+        __requireNode(c, 'insertBefore', this);
+        // A ref that is not null and not actually a child is a NotFoundError.
+        if (ref != null && this.childNodes.indexOf(ref) < 0) {
+          throw new (globalThis.DOMException || Error)(
+            "Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
+            'NotFoundError',
+          );
+        }
         const i = ref ? this.childNodes.indexOf(ref) : -1;
-        if (c) {
+        {
           try {
             const owner = __SELF.get(this) || this;
             c.parentNode = owner;
@@ -1358,11 +1753,25 @@
         else this.childNodes.push(c);
         if (c && c.nodeType === 1) this.children.push(c);
         __maybeLoadScript(c);
+        try {
+          if (c && c.tagName === 'IFRAME') __maybeLoadFrame(c);
+        } catch (e) {}
         return c;
       },
       removeChild(c) {
+        if (!c || typeof c !== 'object' || typeof c.nodeType !== 'number') {
+          throw new TypeError(
+            "Failed to execute 'removeChild' on 'Node': parameter 1 is not of type 'Node'.",
+          );
+        }
         const i = this.childNodes.indexOf(c);
-        if (i >= 0) this.childNodes.splice(i, 1);
+        if (i < 0) {
+          throw new (globalThis.DOMException || Error)(
+            "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+            'NotFoundError',
+          );
+        }
+        this.childNodes.splice(i, 1);
         const j = this.children.indexOf(c);
         if (j >= 0) this.children.splice(j, 1);
         try {
@@ -1523,11 +1932,52 @@
       get clientHeight() {
         return this.__box.height;
       },
+      get scrollTop() {
+        return 0;
+      },
+      set scrollTop(v) {},
+      get scrollLeft() {
+        return 0;
+      },
+      set scrollLeft(v) {},
+      get clientTop() {
+        return 0;
+      },
+      get clientLeft() {
+        return 0;
+      },
+      get offsetTop() {
+        return 0;
+      },
+      get offsetLeft() {
+        return 0;
+      },
+      get tabIndex() {
+        const t = this.attributes && this.attributes.tabindex;
+        return t != null && t !== '' ? parseInt(t, 10) || 0 : -1;
+      },
+      set tabIndex(v) {
+        this.attributes.tabindex = String(v);
+      },
       getBoundingClientRect() {
         const r = __boxRect(this.__box);
-        r.toJSON = function toJSON() {
-          return {};
-        };
+        Object.defineProperty(r, 'toJSON', {
+          value: function toJSON() {
+            return {
+              x: this.x,
+              y: this.y,
+              width: this.width,
+              height: this.height,
+              top: this.top,
+              right: this.right,
+              bottom: this.bottom,
+              left: this.left,
+            };
+          },
+          enumerable: false,
+          writable: true,
+          configurable: true,
+        });
         return r;
       },
       getClientRects() {
@@ -1546,7 +1996,21 @@
       },
       querySelectorAll(sel) {
         const h = __queryWithin(this, sel);
-        return h.length ? h : __queryAll(sel);
+        return __collection(h.length ? h : __queryAll(sel), 'NodeList');
+      },
+      getElementsByTagName(tag) {
+        const t = String(tag);
+        return __collection(
+          __queryWithin(this, t === '*' ? '*' : t.toLowerCase()),
+          'HTMLCollection',
+        );
+      },
+      getElementsByClassName(names) {
+        const want = String(names).trim().split(/\s+/).filter(Boolean);
+        return __collection(
+          want.length ? __queryWithin(this, want.map((c) => '.' + c).join('')) : [],
+          'HTMLCollection',
+        );
       },
       closest(sel) {
         for (
@@ -1691,6 +2155,17 @@
       const ctorName = __TAG_CTOR[T] || 'HTMLElement';
       const ctor = __G0[ctorName] || __G0.HTMLElement;
       if (ctor && ctor.prototype) Object.setPrototypeOf(el, ctor.prototype);
+      for (const k of Object.getOwnPropertyNames(el)) {
+        if (k.charCodeAt(0) === 95 && k.charCodeAt(1) === 95) {
+          try {
+            const d = Object.getOwnPropertyDescriptor(el, k);
+            if (d && d.enumerable && d.configurable) {
+              d.enumerable = false;
+              Object.defineProperty(el, k, d);
+            }
+          } catch (e) {}
+        }
+      }
     } catch (e) {}
     __tag(el.classList, 'DOMTokenList');
     __tag(el.attributes, 'NamedNodeMap');
@@ -1699,6 +2174,21 @@
       // element, `textContent` was a fixed empty string, and
       // `childElementCount` was a profile stand-in.
       const self = () => __SELF.get(el) || el;
+      if (el.tagName === 'IFRAME') {
+        Object.defineProperty(el, 'srcdoc', {
+          get() {
+            return el.__srcdoc || '';
+          },
+          set(v) {
+            el.__srcdoc = String(v);
+            try {
+              __maybeLoadFrame(el);
+            } catch (e) {}
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      }
       const dashed = (k) => 'data-' + String(k).replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
       Object.defineProperty(el, 'dataset', {
         value: new Proxy(
@@ -1766,6 +2256,53 @@
         enumerable: true,
         configurable: true,
       });
+      Object.defineProperty(el, 'innerText', {
+        get() {
+          return textOf(self());
+        },
+        set(v) {
+          this.textContent = v;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperty(el, 'outerText', {
+        get() {
+          return textOf(self());
+        },
+        set(v) {
+          this.textContent = v;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperty(el, 'localName', {
+        get() {
+          return String(self().tagName || 'div').toLowerCase();
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperty(el, 'baseURI', {
+        get() {
+          try {
+            return String(globalThis.location.href);
+          } catch (e) {
+            return '';
+          }
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      // Detached or unlaid-out elements report null, which is what a browser
+      // gives here; the stub returned a function.
+      Object.defineProperty(el, 'offsetParent', {
+        get() {
+          return null;
+        },
+        enumerable: true,
+        configurable: true,
+      });
     } catch (e) {}
 
     // Assigning the property is how a frame is navigated; setAttribute is the
@@ -1783,6 +2320,29 @@
             href = String(v);
             this.attributes.src = href;
             __maybeLoadFrame(this);
+          },
+        });
+      } catch (e) {}
+    }
+    if (T === 'IMG') {
+      try {
+        let href = '';
+        Object.defineProperty(el, 'src', {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return href;
+          },
+          set(v) {
+            href = String(v);
+            this.attributes.src = href;
+            if (!href || /^data:/i.test(href)) return;
+            try {
+              if (typeof __HOST_FETCH === 'function') __HOST_FETCH('GET', __absolute(href), '');
+            } catch (e) {}
+            try {
+              __fireOn(this, 'load');
+            } catch (e) {}
           },
         });
       } catch (e) {}
@@ -1901,10 +2461,11 @@
     };
     while ((m = re.exec(html)) !== null) {
       const text = html.slice(last, m.index);
-      if (text.trim() && stack.length) {
-        // The text node is the content. Assigning textContent as well used to be
-        // harmless because it was a plain string; now that it is derived from
-        // the children it replaces them, and the node below added a second copy.
+      // A fragment keeps its text nodes - at the top level too, and including the
+      // whitespace between siblings. The old `text.trim() && stack.length` gate
+      // dropped both: `div.innerHTML = 'hello'` lost its only child, and every
+      // read of the parsed content came back shorter than a browser's.
+      if (text) {
         try {
           put(document.createTextNode(text));
         } catch (e) {}
@@ -1933,6 +2494,14 @@
       put(el);
       if (!VOID.has(name) && !/\/\s*$/.test(attrs)) stack.push(el);
     }
+    // Text after the last tag (or a fragment that is only text) was never
+    // flushed, so trailing content vanished.
+    const tail = html.slice(last);
+    if (tail) {
+      try {
+        put(document.createTextNode(tail));
+      } catch (e) {}
+    }
     return roots;
   };
 
@@ -1949,6 +2518,9 @@
 
   const document = {
     nodeType: 9,
+    // A document's node name is the literal '#document'; the stub made
+    // `typeof document.nodeName` read 'function'.
+    nodeName: '#document',
     documentElement,
     head,
     body,
@@ -2145,9 +2717,12 @@
     createElementNS: (ns, t) => (ns === SVG_NS ? makeSvgElement(t) : makeElement(t)),
     createTextNode: (t) => {
       const value = String(t);
-      return {
+      const node = {
         nodeType: 3,
         nodeName: '#text',
+        get ownerDocument() {
+          return globalThis.document || null;
+        },
         data: value,
         nodeValue: value,
         textContent: value,
@@ -2159,9 +2734,39 @@
         nextSibling: null,
         previousSibling: null,
       };
+      return __brandNode(node, 'Text');
     },
-    createDocumentFragment: () => makeElement('#fragment'),
-    __registry: {},
+    // Was absent, so a page calling it got `undefined` and threw on the next
+    // use. A comment is a leaf text-ish node with nodeType 8.
+    createComment: (t) => {
+      const value = String(t);
+      const node = {
+        nodeType: 8,
+        nodeName: '#comment',
+        get ownerDocument() {
+          return globalThis.document || null;
+        },
+        data: value,
+        nodeValue: value,
+        textContent: value,
+        length: value.length,
+        parentNode: null,
+        parentElement: null,
+        childNodes: [],
+        nextSibling: null,
+        previousSibling: null,
+      };
+      return __brandNode(node, 'Comment');
+    },
+    createDocumentFragment: () => {
+      const frag = makeElement('#fragment');
+      try {
+        frag.nodeType = 11;
+        frag.nodeName = '#document-fragment';
+        __brandNode(frag, 'DocumentFragment');
+      } catch (e) {}
+      return frag;
+    },
     getElementById: (id) => {
       const all = globalThis.__ELEMENTS || [];
       for (let i = 0; i < all.length; i++) {
@@ -2173,13 +2778,14 @@
     },
     getElementsByTagName: (t) => {
       t = String(t).toLowerCase();
-      if (t === 'head') return [head];
-      if (t === 'body') return [body];
+      const hc = (arr) => __collection(arr, 'HTMLCollection');
+      if (t === 'head') return hc([head]);
+      if (t === 'body') return hc([body]);
       // The registry holds every element ever created, so returning it whole
       // counted the ones a page built and never attached: 103 against a
       // browser's 11 on the same document.
-      if (t === '*') return (globalThis.__ELEMENTS || []).filter((el) => __inDocument(el));
-      return __queryAll(t);
+      if (t === '*') return hc((globalThis.__ELEMENTS || []).filter((el) => __inDocument(el)));
+      return hc(__queryAll(t));
     },
     // A live view of the document's script tags, which is how a collector that
     // hashes each script finds them.
@@ -2188,14 +2794,18 @@
     },
     getElementsByClassName: (c) => {
       const want = String(c).trim().split(/\s+/).filter(Boolean);
-      if (!want.length) return [];
-      return (globalThis.__ELEMENTS || []).filter((el) => {
-        try {
-          return want.every((w) => el.classList && el.classList.contains(w)) && __inDocument(el);
-        } catch (e) {
-          return false;
-        }
-      });
+      const matched = want.length
+        ? (globalThis.__ELEMENTS || []).filter((el) => {
+            try {
+              return (
+                want.every((w) => el.classList && el.classList.contains(w)) && __inDocument(el)
+              );
+            } catch (e) {
+              return false;
+            }
+          })
+        : [];
+      return __collection(matched, 'HTMLCollection');
     },
     querySelector: (sel) => {
       const found = __queryAll(sel);
@@ -2203,16 +2813,60 @@
       if (!/^[a-z0-9]+$/i.test(String(sel))) return null;
       return (document.__registry[sel] ||= makeElement(String(sel)));
     },
-    querySelectorAll: (sel) => __queryAll(sel),
+    querySelectorAll: (sel) => __collection(__queryAll(sel), 'NodeList'),
     hasFocus: () => true,
     visibilityState: 'visible',
     hidden: false,
     addEventListener: (t, f) => listenerFactory('document').add(t, f),
     removeEventListener: (t, f) => listenerFactory('document').remove(t, f),
-    dispatchEvent() {
-      return true;
+    // Was a stub returning true, so a page dispatching its own event to the
+    // document saw no listener run at all.
+    dispatchEvent(event) {
+      if (!event) return true;
+      const type = String(event.type || '');
+      if (!type) return true;
+      try {
+        globalThis.__defineOwn(event, 'target', globalThis.document);
+        globalThis.__defineOwn(event, 'currentTarget', globalThis.document);
+      } catch (e) {}
+      __fire('document', type, event);
+      return !event.defaultPrevented;
     },
-    createEvent: () => ({ initEvent() {} }),
+    createEvent: (name) => {
+      const want = String(name).toLowerCase();
+      const SUPPORTED = {
+        event: 'Event',
+        events: 'Event',
+        htmlevents: 'Event',
+        customevent: 'CustomEvent',
+        mouseevent: 'MouseEvent',
+        mouseevents: 'MouseEvent',
+        keyboardevent: 'KeyboardEvent',
+        uievent: 'UIEvent',
+        uievents: 'UIEvent',
+        focusevent: 'FocusEvent',
+        wheelevent: 'WheelEvent',
+        dragevent: 'DragEvent',
+        pointerevent: 'PointerEvent',
+      };
+      const ctorName = SUPPORTED[want];
+      if (!ctorName) {
+        throw new (globalThis.DOMException || Error)(
+          `Failed to execute 'createEvent' on 'Document': The provided event type ('${name}') is invalid.`,
+          'NotSupportedError',
+        );
+      }
+      const C = globalThis[ctorName] || globalThis.Event;
+      const ev = new C(want);
+      ev.initEvent = function (type, bubbles, cancelable) {
+        try {
+          globalThis.__defineOwn(this, 'type', String(type));
+          globalThis.__defineOwn(this, 'bubbles', !!bubbles);
+          globalThis.__defineOwn(this, 'cancelable', !!cancelable);
+        } catch (e) {}
+      };
+      return ev;
+    },
   };
 
   globalThis.__COOKIES_SET = [];
@@ -2327,6 +2981,11 @@
       }
       const code = String(r.body || '');
       __SCRIPTS_LOADED.push({ src: String(src), status: r.status, bytes: code.length });
+      try {
+        let abs = '';
+        try { abs = el.src || __absolute(src); } catch (e) { abs = __absolute(src); }
+        if (abs) globalThis.__NET.push({ kind: 'script', url: String(abs), __size: code.length });
+      } catch (e) {}
       if (__diagOn()) {
         (globalThis.__SCRIPT_SOURCES || (globalThis.__SCRIPT_SOURCES = [])).push({
           src: String(src),
@@ -2336,12 +2995,17 @@
       if (r.status >= 200 && r.status < 400 && code) {
         const prev = globalThis.document.currentScript;
         globalThis.document.currentScript = el;
+        // A real <script src> runs with the script's URL as its stack origin;
+        // remember it so Error stacks report the src, not `<anonymous>`.
+        const prevUrl = globalThis.__ACTIVE_SCRIPT_URL;
+        globalThis.__ACTIVE_SCRIPT_URL = __absolute(src);
         try {
-          __runInScope(code);
+          __runInScope(code, globalThis.__ACTIVE_SCRIPT_URL);
         } catch (e) {
           __SCRIPTS_LOADED.push({ src: String(src), threw: String(e).slice(0, 140) });
         } finally {
           globalThis.document.currentScript = prev;
+          globalThis.__ACTIVE_SCRIPT_URL = prevUrl;
         }
         fire(true);
       } else {
@@ -2401,38 +3065,58 @@
   globalThis.__maybeLoadFrame = function __maybeLoadFrame(el) {
     if (!globalThis.__FRAMES) return;
     if (!el || el.tagName !== 'IFRAME' || el.__frameLoaded) return;
-    // One framed document is what a challenge needs; more is a page being a page.
-    if (__FRAMES_LOADED.length >= 2) return;
-    let src;
+    if (
+      __FRAMES_LOADED.filter(
+        (f) => f && f.status === 200 && f.bytes !== undefined && f.frameScript === undefined,
+      ).length >= 12
+    ) {
+      return;
+    }
+    let src, srcdoc;
     try {
       src = el.src || el.getAttribute('src');
+      srcdoc = el.srcdoc || el.getAttribute('srcdoc');
     } catch (e) {
       return;
     }
-    if (!src || !/^https?:/i.test(String(src))) return;
-    el.__frameLoaded = true;
-    __schedule(function () {
-      __loadFrameNow(el, String(src));
-    }, 0);
+    if (src && /^https?:/i.test(String(src))) {
+      el.__frameLoaded = true;
+      __schedule(function () {
+        __loadFrameNow(el, String(src));
+      }, 0);
+      return;
+    }
+    if (srcdoc && String(srcdoc).length) {
+      el.__frameLoaded = true;
+      __schedule(function () {
+        __loadFrameNow(el, 'about:srcdoc', String(srcdoc));
+      }, 0);
+    }
   };
 
-  globalThis.__loadFrameNow = function __loadFrameNow(el, src) {
+  globalThis.__loadFrameNow = function __loadFrameNow(el, src, htmlOverride) {
     const note = (extra) => {
       const row = Object.assign({ frame: src }, extra);
       __FRAMES_LOADED.push(row);
       __SCRIPTS_LOADED.push(row);
     };
-    if (typeof __HOST_FETCH !== 'function') return note({ status: 'no-bridge' });
-
-    let r;
-    try {
-      r = JSON.parse(__HOST_FETCH('GET', __absolute(src), ''));
-    } catch (e) {
-      return note({ status: 0, threw: String(e).slice(0, 120) });
+    let html;
+    if (htmlOverride !== undefined) {
+      html = String(htmlOverride);
+      note({ status: 200, bytes: html.length, srcdoc: true });
+      if (!html) return;
+    } else {
+      if (typeof __HOST_FETCH !== 'function') return note({ status: 'no-bridge' });
+      let r;
+      try {
+        r = JSON.parse(__HOST_FETCH('GET', __absolute(src), ''));
+      } catch (e) {
+        return note({ status: 0, threw: String(e).slice(0, 120) });
+      }
+      html = String(r.body || '');
+      note({ status: r.status, bytes: html.length });
+      if (!(r.status >= 200 && r.status < 400) || !html) return;
     }
-    const html = String(r.body || '');
-    note({ status: r.status, bytes: html.length });
-    if (!(r.status >= 200 && r.status < 400) || !html) return;
 
     const view = __frameWindow(el);
     try {
@@ -2459,7 +3143,23 @@
       const markup = String(html).replace(/<script\b[\s\S]*?<\/script\s*>/gi, '');
       __HOST_FRAME_RUN(ctx, '__buildFrameDocument(' + JSON.stringify(markup) + ')');
       let inCtx = 0;
-      for (const code of __inlineScripts(html)) {
+      for (const step of __frameScriptSteps(html)) {
+        let code = step.code;
+        if (step.src !== undefined) {
+          const abs = __resolveFrom(src, step.src);
+          try {
+            const sub = JSON.parse(__HOST_FETCH('GET', abs, ''));
+            if (!(sub.status >= 200 && sub.status < 400) || !sub.body) {
+              note({ frameScript: abs, status: sub.status });
+              continue;
+            }
+            code = String(sub.body);
+            note({ frameScript: abs, bytes: code.length });
+          } catch (e) {
+            note({ frameScript: abs, threw: String(e).slice(0, 100) });
+            continue;
+          }
+        }
         const err = __HOST_FRAME_RUN(ctx, code);
         if (err) note({ frameThrew: String(err).slice(0, 160) });
         else inCtx++;
@@ -2523,6 +3223,31 @@
       if (m[2] && m[2].trim()) out.push(m[2]);
     }
     return out;
+  }
+
+  function __frameScriptSteps(html) {
+    const out = [];
+    const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+    let m;
+    while ((m = re.exec(html))) {
+      const attrs = m[1] || '';
+      const src = /\bsrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+      if (src) {
+        const url = (src[2] || src[3] || src[4] || '').trim();
+        if (url) out.push({ src: url });
+      } else if (m[2] && m[2].trim()) {
+        out.push({ code: m[2] });
+      }
+    }
+    return out;
+  }
+
+  function __resolveFrom(base, url) {
+    try {
+      return new globalThis.URL(String(url), String(base)).href;
+    } catch (e) {
+      return String(url);
+    }
   }
 
   function __frameLocation(src) {
@@ -2767,7 +3492,37 @@
     for (const name of Object.keys(extras)) {
       if (document[name] === undefined) document[name] = extras[name];
     }
+    {
+      const docKids = [documentElement];
+      const def = (name, get) => {
+        try {
+          Object.defineProperty(document, name, { get, configurable: true });
+        } catch (e) {}
+      };
+      if (!document.childNodes || document.childNodes.length === 0) {
+        def('childNodes', () => docKids);
+        def('firstChild', () => docKids[0] || null);
+        def('lastChild', () => docKids[docKids.length - 1] || null);
+      }
+      if (!document.all || document.all.length === 0) {
+        def('all', () => {
+          const els = Array.prototype.slice.call(document.getElementsByTagName('*'));
+          els.item = (i) => els[+i] || null;
+          els.namedItem = (n) => {
+            for (const e of els) if (e.id === n || e.name === n) return e;
+            return null;
+          };
+          return els;
+        });
+      }
+    }
   })();
 
+  Object.defineProperty(document, '__registry', {
+    value: {},
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
   globalThis.__DOCUMENT = document;
 })();

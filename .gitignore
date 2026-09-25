@@ -18,3 +18,6 @@ secrets/
 
 clients/node/npm/*/THIRD-PARTY-LICENSES.md
 clients/node/npm/*/LICENSE
+/vendor/
+tools/bench/chrome/
+/veri-http-*-*/

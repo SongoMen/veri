@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use veri::{Client, Protection, RetryPolicy};
-use veri_integrations::{AwsWaf, Cloudflare, DataDome, PerimeterX, Vercel};
+use veri_integrations::{Akamai, AwsWaf, Cloudflare, DataDome, PerimeterX, Recaptcha, Vercel};
 
 #[derive(Debug, Default)]
 pub struct Flags {
@@ -68,9 +68,11 @@ impl ClientSpec {
             return vec![
                 Arc::new(Cloudflare::detect_only()),
                 Arc::new(DataDome::detect_only()),
+                Arc::new(Akamai::detect_only()),
                 Arc::new(AwsWaf::detect_only()),
                 Arc::new(PerimeterX::detect_only()),
                 Arc::new(Vercel::detect_only()),
+                Arc::new(Recaptcha::detect_only()),
             ];
         }
         let page = || Arc::new(veri_js::V8Solver::new().shadow_dom(true));
@@ -83,12 +85,18 @@ impl ClientSpec {
                     .stopping_at(veri_integrations::cloudflare::CLEARANCE_COOKIE),
             ))),
             Arc::new(DataDome::detect_only()),
+            Arc::new(Akamai::with_solver(Arc::new(
+                veri_js::V8Solver::new().shadow_dom(true).frames(true).stop_after_post(1000),
+            ))),
             Arc::new(AwsWaf::with_solver(page())),
             Arc::new(PerimeterX::detect_only()),
             Arc::new(Vercel::with_solver(Arc::new(
                 veri_js::V8Solver::new()
                     .shadow_dom(true)
                     .stopping_at(veri_integrations::vercel::CLEARANCE_COOKIE),
+            ))),
+            Arc::new(Recaptcha::with_solver(Arc::new(
+                veri_js::V8Solver::new().shadow_dom(true).frames(true),
             ))),
         ]
     }

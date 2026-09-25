@@ -71,14 +71,21 @@ pub fn host_frame_open(
             && bind(inner, context, "__HOST_FETCH", super::bridge::host_fetch)
             && bind(inner, context, "__HOST_FETCH_BYTES", super::bridge::host_fetch_bytes)
             && bind(inner, context, "__HOST_FETCH_HEADERS", super::bridge::host_fetch_headers)
+            && bind(inner, context, "__HOST_WORKER_OPEN", host_worker_open)
             && bind(inner, context, "__HOST_RUN", super::bridge::host_run);
         // The frame's own `parent` is the only way out of its context, and the
         // page reaches in through `__deliverFromParent`.
         let glue = format!(
             "globalThis.__FRAME_INDEX = {index};\n\
              (function () {{\n\
-               const post = function (data) {{\n\
-                 try {{ __HOST_PARENT_POST(JSON.stringify({{ data: data }})); }} catch (e) {{}}\n\
+               globalThis.__PORT_PREFIX = 'f{index}_';\n\
+               const toParent = function (id, payload) {{\n\
+                 try {{ __HOST_PARENT_POST(JSON.stringify({{ __portMsg: {{ id: id, data: payload }} }})); }} catch (e) {{}}\n\
+               }};\n\
+               const post = function (data, origin, transfer) {{\n\
+                 let ports = [];\n\
+                 try {{ ports = globalThis.__portsOut ? globalThis.__portsOut(transfer, toParent) : []; }} catch (e) {{}}\n\
+                 try {{ __HOST_PARENT_POST(JSON.stringify({{ data: data, __ports: ports }})); }} catch (e) {{}}\n\
                }};\n\
                const up = {{ postMessage: post }};\n\
                up.parent = up; up.top = up; up.window = up; up.self = up;\n\
@@ -90,9 +97,16 @@ pub fn host_frame_open(
                globalThis.__deliverFromParent = function (json) {{\n\
                  let m;\n\
                  try {{ m = JSON.parse(json); }} catch (e) {{ return; }}\n\
+                 if (m.__portMsg) {{\n\
+                   if (globalThis.__portDeliver) globalThis.__portDeliver(m.__portMsg.id, m.__portMsg.data);\n\
+                   return;\n\
+                 }}\n\
+                 let inPorts = [];\n\
+                 try {{ inPorts = globalThis.__portsIn ? globalThis.__portsIn(m.__ports, toParent) : []; }} catch (e) {{}}\n\
+                 for (const p of inPorts) {{ try {{ p.start(); }} catch (e) {{}} }}\n\
                  const ev = {{\n\
                    type: 'message', isTrusted: true, data: m.data, origin: m.origin || '',\n\
-                   source: up, lastEventId: '', ports: [], bubbles: false, cancelable: false,\n\
+                   source: up, lastEventId: '', ports: inPorts, bubbles: false, cancelable: false,\n\
                  }};\n\
                  for (const f of ((globalThis.__LISTENERS.window || {{}}).message || []).slice()) {{\n\
                    try {{ typeof f === 'function' ? f(ev) : f.handleEvent(ev); }} catch (e) {{}}\n\
@@ -193,7 +207,25 @@ const WORKERISE: &str = r#"
     }
     Object.setPrototypeOf(DWGS.prototype, WGS.prototype);
     Object.setPrototypeOf(globalThis, DWGS.prototype);
-    if (globalThis.navigator) Object.setPrototypeOf(globalThis.navigator, WN.prototype);
+    if (globalThis.navigator) {
+      // WorkerNavigator carries a subset of Navigator's members; reprototyping to a
+      // bare WN wiped userAgent/userAgentData/platform/... (they live on
+      // Navigator.prototype as getters), so the worker fingerprint - which reads
+      // navigator.userAgentData.getHighEntropyValues() and posts ~23 signals back -
+      // saw an empty navigator. Copy the worker-relevant descriptors onto WN first.
+      const navProto = Object.getPrototypeOf(globalThis.navigator);
+      const WN_PROPS = ['userAgent', 'userAgentData', 'platform', 'appCodeName', 'appName',
+        'appVersion', 'product', 'productSub', 'vendor', 'vendorSub', 'language', 'languages',
+        'onLine', 'hardwareConcurrency', 'deviceMemory', 'maxTouchPoints', 'storage',
+        'connection', 'permissions', 'locks', 'gpu', 'sendBeacon', 'clearAppBadge', 'setAppBadge'];
+      for (const k of WN_PROPS) {
+        try {
+          const d = Object.getOwnPropertyDescriptor(navProto, k);
+          if (d) Object.defineProperty(WN.prototype, k, d);
+        } catch (e) {}
+      }
+      Object.setPrototypeOf(globalThis.navigator, WN.prototype);
+    }
     if (globalThis.location) Object.setPrototypeOf(globalThis.location, WL.prototype);
   } catch (e) {}
   globalThis.WorkerGlobalScope = WGS;
@@ -201,7 +233,28 @@ const WORKERISE: &str = r#"
   globalThis.WorkerNavigator = WN;
   globalThis.WorkerLocation = WL;
   globalThis.self = globalThis;
-  globalThis.importScripts = function () {};
+  // Was a no-op, so a worker built by `importScripts(url)` ran with nothing
+  // imported and every later reference threw. reCAPTCHA's worker is exactly one
+  // line of importScripts, so its side of the protocol never ran at all.
+  // Synchronous by spec, and the bridge is synchronous, so this matches.
+  globalThis.importScripts = function () {
+    for (let i = 0; i < arguments.length; i++) {
+      const raw = String(arguments[i]);
+      let abs = raw;
+      try { abs = new URL(raw, globalThis.location && globalThis.location.href).href; } catch (e) {}
+      let body = '';
+      try {
+        const r = JSON.parse(__HOST_FETCH('GET', abs, ''));
+        if (!(r.status >= 200 && r.status < 400) || !r.body) {
+          throw new Error('importScripts failed: ' + abs + ' (' + r.status + ')');
+        }
+        body = String(r.body);
+      } catch (e) {
+        throw new Error('importScripts could not fetch ' + abs);
+      }
+      (0, eval)(body);
+    }
+  };
   globalThis.close = function () {};
   globalThis.postMessage = function (data) {
     try { __HOST_PARENT_POST(JSON.stringify({ data: data })); } catch (e) {}

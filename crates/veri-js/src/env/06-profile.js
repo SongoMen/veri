@@ -177,6 +177,8 @@
     ['HTMLElement', new Set(['virtualKeyboardPolicy', 'editContext', 'writingSuggestions'])],
   ]);
 
+  const stripProto = (fn) => ({ m() { return fn.apply(this, arguments); } }).m;
+
   for (const name of Object.keys(P.prototypes)) {
     if (CORE.has(name)) continue;
     let ctor;
@@ -210,31 +212,29 @@
           Object.defineProperty(proto, prop, {
             value: constants[prop],
             writable: false,
-            configurable: true,
+            configurable: false,
             enumerable,
           });
           protoFilled++;
           continue;
         }
 
-        // An interface accessor lives on the prototype but needs an instance to
-        // read. Reaching for it on the prototype throws, and a fingerprint that
-        // walks the prototype counts which ones do.
         if (accessors.has(prop) || readable.has(prop)) {
           const quiet = readable.has(prop);
-          // Only the read off the prototype changes. An instance still sees
-          // what it saw before, so nothing downstream of this shifts.
-          const stand_in = function () {};
-          Object.defineProperty(stand_in, 'name', { value: prop, configurable: true });
-          const get = function () {
+          const isHandler = /^on[a-z]/.test(prop);
+          const stand_in = isHandler ? null : stripProto(function () {});
+          if (!isHandler) {
+            Object.defineProperty(stand_in, 'name', { value: prop, configurable: true });
+          }
+          const get = stripProto(function () {
             if (this === proto) {
               if (quiet) return undefined;
               throw new TypeError('Illegal invocation');
             }
             if (ctor && !(this instanceof ctor)) throw new TypeError('Illegal invocation');
             return stand_in;
-          };
-          const set = function (v) {
+          });
+          const set = stripProto(function (v) {
             if (this === proto) {
               if (!quiet) throw new TypeError('Illegal invocation');
               return;
@@ -249,7 +249,7 @@
                 enumerable: true,
               });
             } catch (e) {}
-          };
+          });
           Object.defineProperty(get, 'name', { value: 'get ' + prop, configurable: true });
           Object.defineProperty(set, 'name', { value: 'set ' + prop, configurable: true });
           const desc =
@@ -264,9 +264,9 @@
           continue;
         }
 
-        const fn = function () {
+        const fn = stripProto(function () {
           if (ctor && !(this instanceof ctor)) throw new TypeError('Illegal invocation');
-        };
+        });
         Object.defineProperty(fn, 'name', { value: prop, configurable: true });
         Object.defineProperty(proto, prop, {
           value: fn,
@@ -540,6 +540,30 @@ globalThis.CSS = (function () {
       }
       return out;
     },
+    registerProperty(descriptor) {
+      const E = globalThis.DOMException || Error;
+      if (!descriptor || typeof descriptor !== 'object')
+        throw new TypeError(
+          "Failed to execute 'registerProperty' on 'CSS': The provided value is not of type 'PropertyDefinition'.",
+        );
+      if (!('name' in descriptor))
+        throw new TypeError(
+          "Failed to execute 'registerProperty' on 'CSS': required member name is undefined.",
+        );
+      const name = String(descriptor.name);
+      if (!/^--/.test(name))
+        throw new E(
+          "Failed to execute 'registerProperty' on 'CSS': Custom property names must start with '--'.",
+          'SyntaxError',
+        );
+      const reg = globalThis.__CSS_REGISTERED || (globalThis.__CSS_REGISTERED = new Set());
+      if (reg.has(name))
+        throw new E(
+          "Failed to execute 'registerProperty' on 'CSS': The name provided has already been registered.",
+          'InvalidModificationError',
+        );
+      reg.add(name);
+    },
   };
 })();
 // The typed OM unit helpers: CSS.px(3) and friends.
@@ -698,6 +722,75 @@ globalThis.navigator.serviceWorker = {
   ready: Promise.resolve({}),
 };
 
+globalThis.navigator.mediaSession = {
+  metadata: null,
+  playbackState: 'none',
+  setActionHandler() {},
+  setPositionState() {},
+  setMicrophoneActive() {},
+  setCameraActive() {},
+};
+globalThis.navigator.bluetooth = {
+  getAvailability: () => Promise.resolve(false),
+  getDevices: () => Promise.resolve([]),
+  requestDevice: () =>
+    Promise.reject(
+      new (globalThis.DOMException || Error)(
+        'User cancelled the requestDevice() chooser.',
+        'NotFoundError',
+      ),
+    ),
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent() {
+    return true;
+  },
+};
+
+(function () {
+  const Old = globalThis.MediaMetadata;
+  const proto = (Old && Old.prototype) || {};
+  function MediaMetadata(init) {
+    const d = init || {};
+    this.title = d.title !== undefined ? String(d.title) : '';
+    this.artist = d.artist !== undefined ? String(d.artist) : '';
+    this.album = d.album !== undefined ? String(d.album) : '';
+    this.artwork = Array.isArray(d.artwork)
+      ? d.artwork.map((a) => ({
+          src: String((a && a.src) || ''),
+          sizes: String((a && a.sizes) || ''),
+          type: String((a && a.type) || ''),
+        }))
+      : [];
+  }
+  try {
+    Object.defineProperty(MediaMetadata, 'name', { value: 'MediaMetadata', configurable: true });
+  } catch (e) {}
+  MediaMetadata.prototype = proto;
+  try {
+    Object.defineProperty(proto, 'constructor', {
+      value: MediaMetadata,
+      writable: true,
+      configurable: true,
+    });
+  } catch (e) {}
+  globalThis.MediaMetadata = MediaMetadata;
+})();
+
+globalThis.navigator.credentials = {
+  get: () => Promise.resolve(null),
+  create: () => Promise.resolve(null),
+  store: (c) => Promise.resolve(c),
+  preventSilentAccess: () => Promise.resolve(),
+};
+try {
+  if (globalThis.PublicKeyCredential) {
+    globalThis.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () =>
+      Promise.resolve(true);
+    globalThis.PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(true);
+  }
+} catch (e) {}
+
 globalThis.__MQ = (function () {
   const t = {};
   const src = globalThis.__MEDIA_QUERIES || {};
@@ -777,12 +870,7 @@ globalThis.__CSS_LONGHAND = Object.keys(globalThis.__COMPUTED || {});
 // Other fragments need this to tell a CSS property from any other name.
 globalThis.__CSS_LONGHAND = __CSS_LONGHAND;
 
-// A computed style with one method answers one question and throws on the rest.
-// Font measurement is a standard fingerprint and it reads several.
 globalThis.getComputedStyle = function (el) {
-  // Returns a CSSStyleDeclaration; a plain object is read off by its
-  // constructor name. Declared here rather than at file scope, which in this
-  // file is the global object.
   const __asCSSStyleDeclaration = (o) => {
     try {
       const C = globalThis.CSSStyleDeclaration;
@@ -792,10 +880,12 @@ globalThis.getComputedStyle = function (el) {
     } catch (e) {}
     return o;
   };
-  // `font: caption` and its five siblings are system fonts: the browser
-  // resolves each to a real family, size and weight. Left unresolved they all
-  // computed to the page default, so a collector asking what the six system
-  // fonts are got one answer six times.
+  let __connected = true;
+  try {
+    __connected = el ? globalThis.__isConnected(el) : false;
+  } catch (e) {
+    __connected = false;
+  }
   const SYS = globalThis.__SYSTEM_FONTS || {};
   let sys = null;
   try {
@@ -832,35 +922,63 @@ globalThis.getComputedStyle = function (el) {
           'font-weight': sys.weight,
         }
       : {},
-    // Last, because the harvest measured one particular element: these are
-    // used values for *this* one, and they have to agree with its offsetWidth.
-    // Computed width and height are always px, never the 'auto' a stylesheet
-    // would have written.
-    (function () {
-      let box;
-      try {
-        box = el.__box;
-      } catch (e) {
-        box = null;
-      }
-      const w = (box ? Math.round(box.width) : 0) + 'px';
-      const h = (box ? box.height : 0) + 'px';
-      return {
-        width: w,
-        height: h,
-        'inline-size': w,
-        'block-size': h,
-        'transform-origin':
-          (box ? Math.round(box.width) / 2 : 0) + 'px ' + (box ? box.height / 2 : 0) + 'px',
-        'perspective-origin':
-          (box ? Math.round(box.width) / 2 : 0) + 'px ' + (box ? box.height / 2 : 0) + 'px',
-      };
-    })(),
+    __connected
+      ? (function () {
+          let box;
+          try {
+            box = el.__box;
+          } catch (e) {
+            box = null;
+          }
+          const w = (box ? Math.round(box.width) : 0) + 'px';
+          const h = (box ? box.height : 0) + 'px';
+          return {
+            width: w,
+            height: h,
+            'inline-size': w,
+            'block-size': h,
+            'transform-origin':
+              (box ? Math.round(box.width) / 2 : 0) + 'px ' + (box ? box.height / 2 : 0) + 'px',
+            'perspective-origin':
+              (box ? Math.round(box.width) / 2 : 0) + 'px ' + (box ? box.height / 2 : 0) + 'px',
+          };
+        })()
+      : {},
   );
+  try {
+    const __tag = el && el.tagName ? String(el.tagName).toUpperCase() : '';
+    const __INLINE = {
+      SPAN: 1, A: 1, B: 1, I: 1, EM: 1, STRONG: 1, SMALL: 1, LABEL: 1, CODE: 1,
+      ABBR: 1, CITE: 1, Q: 1, S: 1, U: 1, SUB: 1, SUP: 1, MARK: 1, TIME: 1,
+      VAR: 1, KBD: 1, SAMP: 1, BDI: 1, BDO: 1, DFN: 1, TT: 1,
+    };
+    if (__INLINE[__tag]) {
+      COMPUTED['display'] = 'inline';
+      COMPUTED['width'] = 'auto';
+      COMPUTED['height'] = 'auto';
+      COMPUTED['inline-size'] = 'auto';
+      COMPUTED['block-size'] = 'auto';
+    }
+    // A fresh element is fully opaque with normal bidi; these are not per-element
+    // harvest values.
+    COMPUTED['opacity'] = '1';
+    COMPUTED['unicode-bidi'] = 'normal';
+  } catch (e) {}
+  try {
+    const own = el && el.style;
+    if (own && typeof own.getPropertyValue === 'function' && own.length) {
+      for (const name of own) {
+        const v = own.getPropertyValue(name);
+        if (v !== '' && v != null) COMPUTED[String(name).toLowerCase()] = v;
+      }
+    }
+  } catch (e) {}
+  const __LH = __connected ? __CSS_LONGHAND : [];
   const style = {
     getPropertyValue(k) {
       const n = String(k).toLowerCase();
       if (n in COMPUTED) return COMPUTED[n];
+      if (!__connected) return '';
       try {
         if (el && el.style && typeof el.style.getPropertyValue === 'function') {
           return el.style.getPropertyValue(n);
@@ -876,28 +994,35 @@ globalThis.getComputedStyle = function (el) {
       return '';
     },
     item(i) {
-      return __CSS_LONGHAND[i] || '';
+      return __LH[i] || '';
     },
     get length() {
-      return __CSS_LONGHAND.length;
+      return __LH.length;
     },
     get cssText() {
       return '';
     },
   };
   // Enumerable indices, so `for (const k in style)` yields the property names.
-  __CSS_LONGHAND.forEach((name, i) => {
+  __LH.forEach((name, i) => {
     Object.defineProperty(style, i, { value: name, enumerable: true });
   });
   try {
     style[Symbol.iterator] = function* () {
-      for (let i = 0; i < __CSS_LONGHAND.length; i++) yield __CSS_LONGHAND[i];
+      for (let i = 0; i < __LH.length; i++) yield __LH[i];
     };
   } catch (e) {}
   for (const k of Object.keys(COMPUTED)) {
     const camel = k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     style[camel] = COMPUTED[k];
     style[k] = COMPUTED[k];
+  }
+  if (!__connected) {
+    for (const name of __CSS_LONGHAND) {
+      const camel = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      if (!(camel in style)) Object.defineProperty(style, camel, { value: '', configurable: true });
+      if (!(name in style)) Object.defineProperty(style, name, { value: '', configurable: true });
+    }
   }
   return __asCSSStyleDeclaration(style);
 };
@@ -1100,63 +1225,195 @@ globalThis.speechSynthesis = (function () {
     return c && c.prototype ? c.prototype : Object.prototype;
   };
 
-  const mimes = [];
-  const byType = Object.create(null);
-  for (const src of HARVEST) {
-    for (const t of src.mimeTypes || []) {
-      if (byType[t.type]) continue;
-      const m = Object.create(proto('MimeType'));
-      Object.defineProperties(m, {
-        type: { value: t.type, enumerable: true },
-        suffixes: { value: t.suffixes, enumerable: true },
-        description: { value: t.description, enumerable: true },
-      });
-      byType[t.type] = m;
-      mimes.push(m);
-    }
-  }
+  const markNative = (fn, name, len) => {
+    try {
+      if (name) Object.defineProperty(fn, 'name', { value: name, configurable: true });
+      if (len !== undefined) Object.defineProperty(fn, 'length', { value: len, configurable: true });
+      if (globalThis.__markNativeFn) globalThis.__markNativeFn(fn);
+    } catch (e) {}
+    return fn;
+  };
+  const mimeData = new WeakMap();
+  const pluginData = new WeakMap();
+
+  const mkMime = (t, owner) => {
+    const m = Object.create(proto('MimeType'));
+    mimeData.set(m, {
+      type: t.type,
+      suffixes: t.suffixes,
+      description: t.description,
+      enabledPlugin: owner,
+    });
+    return m;
+  };
+  (function setupMimeProto() {
+    const C = globalThis.MimeType;
+    if (!C || !C.prototype) return;
+    ['type', 'suffixes', 'description', 'enabledPlugin'].forEach((k) => {
+      const g = markNative(
+        function () {
+          const d = mimeData.get(this);
+          return d ? d[k] : undefined;
+        },
+        'get ' + k,
+        0,
+      );
+      try {
+        Object.defineProperty(C.prototype, k, { get: g, enumerable: true, configurable: true });
+      } catch (e) {}
+    });
+  })();
+
+  const globalMimes = [];
+  const globalByType = Object.create(null);
 
   const plugins = HARVEST.map((src) => {
-    const own = (src.mimeTypes || []).map((t) => byType[t.type]);
+    const types = src.mimeTypes || [];
     const p = Object.create(proto('Plugin'));
-    Object.defineProperties(p, {
-      name: { value: src.name, enumerable: true },
-      filename: { value: src.filename, enumerable: true },
-      description: { value: src.description, enumerable: true },
-      length: { value: own.length, enumerable: true },
+    pluginData.set(p, {
+      name: src.name,
+      filename: src.filename,
+      description: src.description,
+      length: types.length,
+      types: types,
     });
-    own.forEach((m, i) => {
-      Object.defineProperty(p, i, { value: m, enumerable: true });
-      Object.defineProperty(p, m.type, { value: m, enumerable: false });
+    types.forEach((t, i) => {
+      Object.defineProperty(p, i, { value: mkMime(t, p), enumerable: true, configurable: true });
+      Object.defineProperty(p, t.type, {
+        get: () => mkMime(t, p),
+        enumerable: false,
+        configurable: true,
+      });
     });
-    p.item = (i) => p[i] || null;
-    p.namedItem = (n) => p[n] || null;
     return p;
   });
+  (function setupPluginProto() {
+    const C = globalThis.Plugin;
+    if (!C || !C.prototype) return;
+    ['name', 'filename', 'description', 'length'].forEach((k) => {
+      const g = markNative(
+        function () {
+          const d = pluginData.get(this);
+          return d ? d[k] : undefined;
+        },
+        'get ' + k,
+        0,
+      );
+      try {
+        Object.defineProperty(C.prototype, k, { get: g, enumerable: true, configurable: true });
+      } catch (e) {}
+    });
+    const put = (name, fn, len) => {
+      markNative(fn, name, len);
+      try {
+        Object.defineProperty(C.prototype, name, {
+          value: fn,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (e) {}
+    };
+    put(
+      'item',
+      function item(i) {
+        const d = pluginData.get(this);
+        if (!d) return null;
+        const t = d.types[i >>> 0];
+        return t ? mkMime(t, this) : null;
+      },
+      1,
+    );
+    put(
+      'namedItem',
+      function namedItem(n) {
+        const d = pluginData.get(this);
+        if (!d) return null;
+        const t = d.types.find((x) => x.type === String(n));
+        return t ? mkMime(t, this) : null;
+      },
+      1,
+    );
+    try {
+      Object.defineProperty(C.prototype, Symbol.iterator, {
+        value: markNative(function* () {
+          const d = pluginData.get(this);
+          const n = d ? d.types.length : 0;
+          for (let i = 0; i < n; i++) yield this[i];
+        }),
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch (e) {}
+  })();
 
-  mimes.forEach((m) => {
-    Object.defineProperty(m, 'enabledPlugin', { value: plugins[0], enumerable: true });
+  HARVEST.forEach((src, pi) => {
+    for (const t of src.mimeTypes || []) {
+      if (globalByType[t.type]) continue;
+      const gm = mkMime(t, plugins[pi]);
+      globalByType[t.type] = gm;
+      globalMimes.push(gm);
+    }
   });
+  const mimes = globalMimes;
+
+  const setupProto = (protoName) => {
+    const C = globalThis[protoName];
+    if (!C || !C.prototype) return;
+    const pr = C.prototype;
+    const put = (name, fn, len) => {
+      try {
+        Object.defineProperty(fn, 'name', { value: name, configurable: true });
+        Object.defineProperty(fn, 'length', { value: len, configurable: true });
+        if (globalThis.__markNativeFn) globalThis.__markNativeFn(fn);
+        Object.defineProperty(pr, name, {
+          value: fn,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      } catch (e) {}
+    };
+    put('item', function item(i) { i = i >>> 0; return this[i] != null ? this[i] : null; }, 1);
+    put('namedItem', function namedItem(n) { const v = this[String(n)]; return v != null ? v : null; }, 1);
+    if (protoName === 'PluginArray') put('refresh', function refresh() {}, 0);
+    try {
+      const lenGet = function length() {
+        let n = 0;
+        while (Object.prototype.hasOwnProperty.call(this, n)) n++;
+        return n;
+      };
+      Object.defineProperty(lenGet, 'name', { value: 'get length', configurable: true });
+      if (globalThis.__markNativeFn) globalThis.__markNativeFn(lenGet);
+      Object.defineProperty(pr, 'length', { get: lenGet, enumerable: true, configurable: true });
+    } catch (e) {}
+    try {
+      const it = function* () {
+        const len = this.length;
+        for (let i = 0; i < len; i++) yield this[i];
+      };
+      Object.defineProperty(pr, Symbol.iterator, {
+        value: it,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch (e) {}
+  };
 
   const list = (items, protoName, key) => {
     const a = Object.create(proto(protoName));
     items.forEach((it, i) => {
-      Object.defineProperty(a, i, { value: it, enumerable: true });
-      Object.defineProperty(a, it[key], { value: it, enumerable: false });
+      Object.defineProperty(a, i, { value: it, enumerable: true, configurable: true });
+      Object.defineProperty(a, it[key], { value: it, enumerable: false, configurable: true });
     });
-    Object.defineProperty(a, 'length', { value: items.length, enumerable: true });
-    a.item = (i) => a[i] || null;
-    a.namedItem = (n) => a[n] || null;
-    a.refresh = () => {};
-    try {
-      a[Symbol.iterator] = function* () {
-        for (let i = 0; i < items.length; i++) yield items[i];
-      };
-    } catch (e) {}
     return a;
   };
 
   try {
+    setupProto('PluginArray');
+    setupProto('MimeTypeArray');
     globalThis.navigator.plugins = list(plugins, 'PluginArray', 'name');
     globalThis.navigator.mimeTypes = list(mimes, 'MimeTypeArray', 'type');
   } catch (e) {}

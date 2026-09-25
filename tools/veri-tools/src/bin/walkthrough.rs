@@ -78,6 +78,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let Opts { identity: pinned, proxy, .. } = opts;
     let mut challenged_identity = pinned.clone();
+    let mut solved_with: Option<String> = None;
     let host = veri::host_of(&target).unwrap_or_default();
 
     println!("veri walkthrough");
@@ -106,6 +107,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             if res.is_ok() && res.content_length() > 200 {
                 r.reached = true;
+                solved_with = Some(res.identity.to_string());
                 r.pass("got a real response");
             } else {
                 r.fail("response was not usable");
@@ -238,34 +240,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !challenged {
         r.skip("no challenge was served, so there is nothing for the solver to do");
     } else {
-        let with_solver = client_for(Some(&challenged_identity), true, proxy.as_deref())?;
+        let solve_id = solved_with.as_deref().unwrap_or(challenged_identity.as_str());
+        let with_solver = client_for(Some(solve_id), true, proxy.as_deref())?;
         let t = Instant::now();
         match with_solver.get(&target).send().await {
             Ok(res) => {
                 println!(
-                    "      {} · {} bytes · cleared={:?} · {:?}",
+                    "      {} · {} bytes · via {} · cleared={:?} · {:?}",
                     res.verdict,
                     res.content_length(),
+                    res.identity,
                     res.cleared,
                     t.elapsed()
                 );
                 if res.verdict == Verdict::Ok && res.cleared.is_some() {
                     r.pass("challenge solved");
                 } else if res.verdict == Verdict::Ok {
-                    r.pass("succeeded (no solve was needed on retry)");
+                    r.pass("succeeded (host trusted this identity; no solve needed)");
                 } else {
                     r.fail("solver did not clear the challenge");
                 }
             }
             Err(e) if e.saw_challenge() => {
                 println!("      {e}");
-                let host = veri::host_of(&target).unwrap_or_default();
-                if with_solver.has_clearance(&host) {
-                    println!("      a clearance cookie was issued for {host}");
-                    r.fail("clearance was issued but the page still challenged");
-                } else {
-                    r.fail("solver did not obtain clearance");
-                }
+                r.fail("solver did not obtain clearance");
             }
             Err(e) => r.fail(&format!("{e}")),
         }

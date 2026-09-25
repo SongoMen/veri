@@ -1,6 +1,7 @@
 (function () {
   const __defineOwn = (o, k, v) =>
     Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+  globalThis.__defineOwn = __defineOwn;
 
   globalThis.__sha256 = function __sha256(bytes) {
     const K = [

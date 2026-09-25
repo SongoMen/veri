@@ -46,7 +46,10 @@ fn addeventlistener_is_shared_and_inherited() {
     .expect("run");
     let v = out.value.unwrap_or_default();
     println!("AEL PROBE: {v}");
-    assert!(v.contains("\"eq\":true"), "window.addEventListener !== document.addEventListener: {v}");
+    assert!(
+        v.contains("\"eq\":true"),
+        "window.addEventListener !== document.addEventListener: {v}"
+    );
     assert!(v.contains("\"docOwn\":false"), "document still OWNS addEventListener: {v}");
     assert!(v.contains("\"winOwn\":false"), "window still OWNS addEventListener: {v}");
 }

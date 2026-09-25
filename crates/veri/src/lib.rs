@@ -484,9 +484,8 @@ impl Client {
             return Ok(AfterClear::NotCleared);
         }
 
-        if let Some(ms) = std::env::var("VERI_CLEAR_RETRY_DELAY_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
+        if let Some(ms) =
+            std::env::var("VERI_CLEAR_RETRY_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok())
         {
             tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
         }

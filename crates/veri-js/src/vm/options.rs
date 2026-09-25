@@ -11,7 +11,9 @@ pub enum StopWhen {
     #[default]
     Idle,
     Cookie(String),
-    Posted { min_body: usize },
+    Posted {
+        min_body: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

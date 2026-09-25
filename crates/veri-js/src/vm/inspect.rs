@@ -33,7 +33,11 @@ impl v8::inspector::ChannelImpl for Channel {
     unsafe fn base_ptr(this: *const Self) -> *const v8::inspector::ChannelBase {
         unsafe { addr_of!((*this).base) }
     }
-    fn send_response(&mut self, _call_id: i32, message: v8::UniquePtr<v8::inspector::StringBuffer>) {
+    fn send_response(
+        &mut self,
+        _call_id: i32,
+        message: v8::UniquePtr<v8::inspector::StringBuffer>,
+    ) {
         if let Some(m) = message.as_ref() {
             self.sink.lock().unwrap().responses.push(m.string().to_string());
         }

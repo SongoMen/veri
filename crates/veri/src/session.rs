@@ -72,14 +72,13 @@ impl SessionStore {
     fn build_client(&self, identity: Identity, jar: Arc<Jar>) -> Result<wreq::Client, Error> {
         let base = wreq::Client::builder();
         let base = base.emulation(crate::identity::profile_for(&identity));
-        let mut builder = base
-            .cookie_provider(jar)
-            .https_only(self.config.https_only)
-            .redirect(if self.config.redirect_limit == 0 {
+        let mut builder = base.cookie_provider(jar).https_only(self.config.https_only).redirect(
+            if self.config.redirect_limit == 0 {
                 wreq::redirect::Policy::none()
             } else {
                 wreq::redirect::Policy::limited(self.config.redirect_limit)
-            });
+            },
+        );
         if let Some(t) = self.config.timeout {
             builder = builder.timeout(t);
         }

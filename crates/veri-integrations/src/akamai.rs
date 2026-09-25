@@ -200,7 +200,6 @@ impl Protection for Akamai {
                 report.errors.join("; ")
             )));
         }
-        let _ = cookies;
         Ok(())
     }
 }

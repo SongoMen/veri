@@ -110,7 +110,7 @@ fn detect_only_says_so_rather_than_pretending_to_clear() {
 }
 
 #[test]
-fn a_sensor_run_that_earns_nothing_is_rejected() {
+fn a_sensor_run_is_judged_by_the_retry_not_by_the_cookie() {
     let h = bot_manager();
     let r = Akamai::with_solver(StubSolver::quiet()).clear(
         &parts(403, &h, SENSOR_BODY),
@@ -118,12 +118,25 @@ fn a_sensor_run_that_earns_nothing_is_rejected() {
         dead_bridge(),
         &Jar::default(),
     );
-    assert!(matches!(r, Err(ClearError::Rejected(_))));
+    assert!(r.is_ok());
 
     let jar = Jar::default();
     let ok = Akamai::with_solver(StubSolver::setting(&[&format!("{CLEARANCE_COOKIE}=ABC~0~YAAQ")]))
         .clear(&parts(403, &h, SENSOR_BODY), "ua", dead_bridge(), &jar);
     assert!(ok.is_ok());
+    assert_eq!(jar.cookie(CLEARANCE_COOKIE).as_deref(), Some("ABC~0~YAAQ"));
+}
+
+#[test]
+fn a_sensor_script_that_throws_is_a_failure() {
+    let h = bot_manager();
+    let r = Akamai::with_solver(StubSolver::erroring(&["ReferenceError: bmak"])).clear(
+        &parts(403, &h, SENSOR_BODY),
+        "ua",
+        dead_bridge(),
+        &Jar::default(),
+    );
+    assert!(matches!(r, Err(ClearError::Failed(m)) if m.contains("ReferenceError")));
 }
 
 #[test]

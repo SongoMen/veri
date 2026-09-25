@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-24.04-arm
             pkg: veri-http-linux-arm64
           - os: windows-latest
-            pkg: veri-http-win32-x64
+            pkg: veri-http-windows-x64
 
     runs-on: ${{ matrix.os }}
     steps:

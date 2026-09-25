@@ -31,6 +31,9 @@ fn addeventlistener_is_native_and_guards_its_receiver() {
     let v = out.value.unwrap_or_default();
     println!("BARECALL: {v}");
     assert!(v.contains("[native code]"), "addEventListener does not toString as native: {v}");
-    assert!(v.contains("Illegal invocation"), "no Illegal invocation for a non-EventTarget receiver: {v}");
+    assert!(
+        v.contains("Illegal invocation"),
+        "no Illegal invocation for a non-EventTarget receiver: {v}"
+    );
     assert!(v.contains("\"sloppy\":\"x=ok\""), "a valid (global) receiver should not throw: {v}");
 }

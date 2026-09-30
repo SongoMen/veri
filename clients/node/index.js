@@ -209,6 +209,12 @@ class Veri {
         stderr += d.toString();
       });
 
+      proc.stdin.on('error', (e) => {
+        const err = new VeriError(`veri-daemon stopped reading requests: ${e.message}`);
+        reject(err);
+        this._rejectAll(err);
+      });
+
       proc.on('error', (e) => {
         reject(
           new VeriError(

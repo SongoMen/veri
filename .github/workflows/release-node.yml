@@ -17,12 +17,15 @@ jobs:
             pkg: veri-http-darwin-x64
           - os: ubuntu-latest
             pkg: veri-http-linux-x64
+            container: rust:1-bookworm
           - os: ubuntu-24.04-arm
             pkg: veri-http-linux-arm64
+            container: rust:1-bookworm
           - os: windows-latest
             pkg: veri-http-windows-x64
 
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,7 +36,7 @@ jobs:
 
       - name: install cmake (linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        run: apt-get update && apt-get install -y cmake clang libclang-dev
 
       - name: sync version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -52,6 +55,11 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] && BIN="$BIN.exe"
           echo '{"id":1,"method":"info"}' | "$BIN" | head -2 | grep -q '"ready":true'
           echo "binary responds"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            NEED=$(objdump -T "$BIN" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)
+            echo "needs $NEED"
+            [ "$(printf '%s\n' "$NEED" GLIBC_2.36 | sort -V | tail -1)" = GLIBC_2.36 ] || { echo "binary needs $NEED, above bookworm's GLIBC_2.36"; exit 1; }
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

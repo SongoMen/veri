@@ -525,6 +525,23 @@ function mockClient(env = {}) {
     }
   });
 
+  await test('a daemon that stops reading rejects instead of crashing the process', async () => {
+    const ready = JSON.stringify({ ready: true, version: '0.0.0-mock', protocol: 2 });
+    const veri = new Veri({ daemonPath: '/bin/sh', daemonArgs: ['-c', `exec 0<&-; echo '${ready}'; sleep 30`] });
+    const timeout = new Promise((_, rj) =>
+      setTimeout(() => rj(new Error('never settled: the caller would hang forever')), 5000),
+    );
+    try {
+      await Promise.race([veri.get('https://mock.test/x'), timeout]);
+      assert.fail('should have reported the closed pipe');
+    } catch (e) {
+      assert.ok(e instanceof VeriError, `expected a VeriError, got: ${e.message}`);
+      assert.match(e.message, /EPIPE|stopped reading|write failed/);
+    } finally {
+      await veri.close();
+    }
+  });
+
   console.log(`\n────────────────\n  passed ${pass}   failed ${fail}`);
   process.exit(fail === 0 ? 0 : 1);
 })();
